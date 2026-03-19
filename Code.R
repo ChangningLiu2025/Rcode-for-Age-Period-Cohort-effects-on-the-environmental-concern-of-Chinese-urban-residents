@@ -5,11 +5,13 @@
 library(cem)
 library(dplyr)
 library(lme4)
+library(nlme)
 library(lmerTest)
 library(mice)
 library(tidyr)
 library(MuMIn)
 library(ggplot2)
+library(ggnewscale)
 library(reshape2)
 library(patchwork)
 library(purrr)
@@ -36,10 +38,9 @@ CGSS2003 <- read.csv('CGSS2003.csv')  # The original data downloaded from the CG
 CGSS2003_filter <- CGSS2003[,c('id','sex','birth','k1_1','k1_2','k1_3','k1_4',
                                'k1_5','k1_6','k1_7','k1_8','k1_9','k1_10','k1_11',
                                'k1_12', 'k1_13','k1_14','k1_15',
-                               'lifefeel','k14','educ','hhyrinc')]
+                               'lifefeel','educ','hhyrinc')]
 # Rename column names
 names(CGSS2003_filter)[names(CGSS2003_filter) == "lifefeel"] <- "happiness"
-names(CGSS2003_filter)[names(CGSS2003_filter) == "k14"] <- "gov_satisfaction"
 names(CGSS2003_filter)[names(CGSS2003_filter) == "educ"] <- "education"
 names(CGSS2003_filter)[names(CGSS2003_filter) == "hhyrinc"] <- "household_income"
 names(CGSS2003_filter)[names(CGSS2003_filter) == "k1_1"] <- "NEP1"
@@ -87,7 +88,6 @@ CGSS2003_filter$sex[CGSS2003_filter$sex %in% c(-3, -2, -1)] <- NA
 CGSS2003_filter$birth[CGSS2003_filter$birth %in% c(-3, -2, -1)] <- NA 
 CGSS2003_filter$happiness[CGSS2003_filter$happiness %in% c(-3, -2, -1)] <- NA 
 CGSS2003_filter$education[CGSS2003_filter$education %in% c(-3, -2, -1)] <- NA 
-CGSS2003_filter$gov_satisfaction[CGSS2003_filter$gov_satisfaction %in% c(-3, -2, -1)] <- NA 
 CGSS2003_filter$household_income[CGSS2003_filter$household_income %in% c(-3, -2, -1)] <- NA 
 
 # Due to the settings of the 2003 data, adjust the NEP values to ensure 
@@ -102,17 +102,6 @@ col_names_list_2003 <- c("NEP1", "NEP2", "NEP3",'NEP4','NEP5','NEP6','NEP7','NEP
 for (col_name in col_names_list_2003) {
   CGSS2003_filter <- replace_values_NEP(CGSS2003_filter, col_name)
 }
-
-# Define government efforts based on the data as follows:  
-#   - "Overemphasizing economic development while neglecting environmental protection" = 1  
-# - "Insufficient attention and inadequate investment in environmental protection" = 1  
-# - "Unclear" = 2  
-# - "Made efforts but with unsatisfactory results" = 2  
-# - "Made significant efforts with some achievements" = 3  
-# - "Achieved great success" = 3
-CGSS2003_filter$gov_satisfaction <- ifelse(CGSS2003_filter$gov_satisfaction %in% c(1,2), 1, 
-                                           ifelse(CGSS2003_filter$gov_satisfaction %in% c(3,6), 2, 
-                                                  ifelse(CGSS2003_filter$gov_satisfaction %in% c(4,5), 3,CGSS2003_filter$gov_satisfaction)))
 
 # Define years of education based on the data as follows:  
 #   - No formal education = 0  
@@ -148,7 +137,7 @@ CGSS2003_filter <- subset(CGSS2003_filter, select = -missing_values_ratio2003)
 # # Define the variables as follows:  
 # - **Continuous variables**: Age, household annual income, years of education  
 # - **Unordered categorical variables**: Gender, housing type, marital status  
-# - **Ordered categorical variables**: NEP, government satisfaction, subjective well-being
+# - **Ordered categorical variables**: NEP, subjective well-being
 CGSS2003_filter$age <- as.numeric(CGSS2003_filter$age)
 CGSS2003_filter$household_income <- as.numeric(CGSS2003_filter$household_income)
 CGSS2003_filter$household_income <- scale(CGSS2003_filter$household_income) # Standardize household income to ensure consistency in variable scales.
@@ -158,19 +147,20 @@ CGSS2003_filter <- CGSS2003_filter %>% mutate_at(vars(sex), as.factor)
 NEP_order <- c("1", "2", "3",'4','5')
 CGSS2003_filter <- CGSS2003_filter %>% mutate_at(vars(NEP1,NEP2,NEP3,NEP4,NEP5,NEP6,NEP7,NEP8,NEP9,NEP10,NEP11,NEP12,NEP13,NEP14,NEP15), 
                                                  list(~ factor(., levels = NEP_order, ordered = TRUE)))
-gov_order <- c("1", "2", "3")
-CGSS2003_filter <- CGSS2003_filter %>% mutate(gov_satisfaction = factor(gov_satisfaction, levels = gov_order, ordered = TRUE))
 happy_order <- c("1", "2", "3",'4','5')
 CGSS2003_filter <- CGSS2003_filter %>% mutate(happiness = factor(happiness, levels = happy_order, ordered = TRUE))
 
 # Sort the data according to the specified order.
 custom_order <- c("NEP1", "NEP2", "NEP3",'NEP4','NEP5','NEP6','NEP7','NEP8','NEP9','NEP10','NEP11','NEP12','NEP13','NEP14',
-                  'NEP15','sex','age','happiness','gov_satisfaction','education','household_income','birth')# ,rental,marriage
+                  'NEP15','sex','age','happiness','education','household_income','birth')# ,rental,marriage
 CGSS2003_filter <- CGSS2003_filter %>% select(all_of(custom_order))
 CGSS2003_filter$Year <- 2003
 
 # Write the data before imputation (i.e., CGSS2003 in Supplementary Table 7).
 # write.csv(CGSS2003_filter, file = 'CGSS2003(插补前).csv', row.names = FALSE)
+
+# 排除出生年份和时间（因为其与age完全共线性）
+CGSS2003_filter <- subset(CGSS2003_filter, select = -c(Year, birth))
 
 # Data imputation
 impmice=mice(CGSS2003_filter,m=5,seed=2003)
@@ -190,13 +180,12 @@ CGSS2010 <- read.csv('CGSS2010.csv') # The original data downloaded from the CGS
 # years of education, local government environmental protection efforts, and annual household income.
 CGSS2010_filter <- CGSS2010[,c('id','a2','a3a','l2501','l2502','l2503','l2504','l2505',
                                'l2506','l2507','l2508','l2509','l2510','l2511','l2512',
-                               'l2513','l2514','l2515','a36','l16c','a7a','a62','s5')]
+                               'l2513','l2514','l2515','a36','a7a','a62','s5')]
 
 # Rename column names
 names(CGSS2010_filter)[names(CGSS2010_filter) == "a2"] <- "sex"
 names(CGSS2010_filter)[names(CGSS2010_filter) == "a3a"] <- "birth"
 names(CGSS2010_filter)[names(CGSS2010_filter) == "a36"] <- "happiness"
-names(CGSS2010_filter)[names(CGSS2010_filter) == "l16c"] <- "gov_satisfaction"
 names(CGSS2010_filter)[names(CGSS2010_filter) == "a7a"] <- "education"
 names(CGSS2010_filter)[names(CGSS2010_filter) == "a62"] <- "household_income"
 names(CGSS2010_filter)[names(CGSS2010_filter) == "s5"] <- "type"
@@ -248,19 +237,7 @@ CGSS2010_filter$sex[CGSS2010_filter$sex %in% c(-3, -2, -1)] <- NA
 CGSS2010_filter$birth[CGSS2010_filter$birth %in% c(-3)] <- NA 
 CGSS2010_filter$happiness[CGSS2010_filter$happiness %in% c(-3, -2)] <- NA 
 CGSS2010_filter$education[CGSS2010_filter$education %in% c(-3, 14)] <- NA 
-CGSS2010_filter$gov_satisfaction[CGSS2010_filter$gov_satisfaction %in% c(-3, -2, -1)] <- NA 
 CGSS2010_filter$household_income[CGSS2010_filter$household_income %in% c(9999997, 9999998, 9999999)] <- NA 
-
-# Define government efforts based on the data as follows:  
-#   - "Overemphasizing economic development while neglecting environmental protection" = 1  
-# - "Insufficient attention and inadequate investment in environmental protection" = 1  
-# - "Unclear" = 2  
-# - "Made efforts but with unsatisfactory results" = 2  
-# - "Made significant efforts with some achievements" = 3  
-# - "Achieved great success" = 3
-CGSS2010_filter$gov_satisfaction <- ifelse(CGSS2010_filter$gov_satisfaction %in% c(1,2), 1, 
-                                           ifelse(CGSS2010_filter$gov_satisfaction %in% c(3,8), 2, 
-                                                  ifelse(CGSS2010_filter$gov_satisfaction %in% c(4,5), 3,CGSS2010_filter$gov_satisfaction)))
 
 # Define years of education based on the data as follows:  
 #   - No formal education = 0  
@@ -298,7 +275,7 @@ CGSS2010_filter <- subset(CGSS2010_filter, select = -type)
 # # Define the variables as follows:  
 # - **Continuous variables**: Age, household annual income, years of education  
 # - **Unordered categorical variables**: Gender, housing type, marital status  
-# - **Ordered categorical variables**: NEP, government satisfaction, subjective well-being
+# - **Ordered categorical variables**: NEP, subjective well-being
 CGSS2010_filter$age <- as.numeric(CGSS2010_filter$age)
 CGSS2010_filter$household_income <- as.numeric(CGSS2010_filter$household_income)
 CGSS2010_filter$household_income <- scale(CGSS2010_filter$household_income) # Standardize household income to ensure consistency in variable scales.
@@ -308,19 +285,20 @@ CGSS2010_filter <- CGSS2010_filter %>% mutate_at(vars(sex), as.factor)
 NEP_order <- c("1", "2", "3",'4','5')
 CGSS2010_filter <- CGSS2010_filter %>% mutate_at(vars(NEP1,NEP2,NEP3,NEP4,NEP5,NEP6,NEP7,NEP8,NEP9,NEP10,NEP11,NEP12,NEP13,NEP14,NEP15), 
                                                  list(~ factor(., levels = NEP_order, ordered = TRUE)))
-gov_order <- c("1", "2", "3")
-CGSS2010_filter <- CGSS2010_filter %>% mutate(gov_satisfaction = factor(gov_satisfaction, levels = gov_order, ordered = TRUE))
 happy_order <- c("1", "2", "3",'4','5')
 CGSS2010_filter <- CGSS2010_filter %>% mutate(happiness = factor(happiness, levels = happy_order, ordered = TRUE))
 
 # Sort the data according to the specified order.
 custom_order <- c("NEP1", "NEP2", "NEP3",'NEP4','NEP5','NEP6','NEP7','NEP8','NEP9','NEP10','NEP11','NEP12','NEP13','NEP14',
-                  'NEP15','sex','age','happiness','gov_satisfaction','education','household_income','birth') #'rental','marriage',
+                  'NEP15','sex','age','happiness','education','household_income','birth') #'rental','marriage',
 CGSS2010_filter <- CGSS2010_filter %>% select(all_of(custom_order))
 CGSS2010_filter$Year <- 2010
 
 # Write the data before imputation (i.e., CGSS2010 in Supplementary Table 7).
 # write.csv(CGSS2010_filter, file = 'CGSS2010(插补前).csv', row.names = FALSE)
+
+# 排除出生年份和时间（因为其与age完全共线性）
+CGSS2010_filter <- subset(CGSS2010_filter, select = -c(Year, birth))
 
 # Data imputation
 impmice=mice(CGSS2010_filter,m=5,seed=2003)
@@ -340,13 +318,12 @@ CGSS2021 <- read.csv('CGSS2021.csv') # The original data downloaded from the CGS
 # years of education, local government environmental protection efforts, and annual household income.
 CGSS2021_filter <- CGSS2021[,c('id','A2','A3_1','H12_1','H12_2','H12_3','H12_4','H12_5','H12_6',
                                'H12_7','H12_8','H12_9','H12_10','H12_11','H12_12','H12_13','H12_14',
-                               'H12_15','A36','A7a','H8','A62','type')]
+                               'H12_15','A36','A7a','A62','type')]
 
 # Rename column names
 names(CGSS2021_filter)[names(CGSS2021_filter) == "A2"] <- "sex"
 names(CGSS2021_filter)[names(CGSS2021_filter) == "A3_1"] <- "birth"
 names(CGSS2021_filter)[names(CGSS2021_filter) == "A36"] <- "happiness"
-names(CGSS2021_filter)[names(CGSS2021_filter) == "H8"] <- "gov_satisfaction"
 names(CGSS2021_filter)[names(CGSS2021_filter) == "A7a"] <- "education"
 names(CGSS2021_filter)[names(CGSS2021_filter) == "A62"] <- "household_income"
 names(CGSS2021_filter)[names(CGSS2021_filter) == "H12_1"] <- "NEP1"
@@ -399,18 +376,6 @@ CGSS2021_filter$household_income[CGSS2021_filter$household_income %in% c(9999997
 # Assign it a value of 1,000,000, and after standardization, it will still be the maximum value.
 CGSS2021_filter$household_income[CGSS2021_filter$household_income == 9999996] <- 1000000
 
-
-# Define government efforts based on the data as follows:  
-#   - "Overemphasizing economic development while neglecting environmental protection" = 1  
-# - "Insufficient attention and inadequate investment in environmental protection" = 1  
-# - "Unclear" = 2  
-# - "Made efforts but with unsatisfactory results" = 2  
-# - "Made significant efforts with some achievements" = 3  
-# - "Achieved great success" = 3
-CGSS2021_filter$gov_satisfaction <- ifelse(CGSS2021_filter$gov_satisfaction %in% c(1,2), 1, 
-                                           ifelse(CGSS2021_filter$gov_satisfaction %in% c(3,98), 2, 
-                                                  ifelse(CGSS2021_filter$gov_satisfaction %in% c(4,5), 3,CGSS2021_filter$gov_satisfaction)))
-
 # Define years of education based on the data as follows:  
 #   - No formal education = 0  
 # - Primary school and private school = 6  
@@ -446,7 +411,7 @@ CGSS2021_filter <- subset(CGSS2021_filter, select = -type)
 # # Define the variables as follows:  
 # - **Continuous variables**: Age, household annual income, years of education  
 # - **Unordered categorical variables**: Gender, housing type, marital status  
-# - **Ordered categorical variables**: NEP, government satisfaction, subjective well-being
+# - **Ordered categorical variables**: NEP, subjective well-being
 CGSS2021_filter$age <- as.numeric(CGSS2021_filter$age)
 CGSS2021_filter$household_income <- as.numeric(CGSS2021_filter$household_income)
 CGSS2021_filter$household_income <- scale(CGSS2021_filter$household_income) # Standardize household income to ensure consistency in variable scales.
@@ -456,19 +421,20 @@ CGSS2021_filter <- CGSS2021_filter %>% mutate_at(vars(sex), as.factor)
 NEP_order <- c("1", "2", "3",'4','5')
 CGSS2021_filter <- CGSS2021_filter %>% mutate_at(vars(NEP1,NEP2,NEP3,NEP4,NEP5,NEP6,NEP7,NEP8,NEP9,NEP10,NEP11,NEP12,NEP13,NEP14,NEP15), 
                                                  list(~ factor(., levels = NEP_order, ordered = TRUE)))
-gov_order <- c("1", "2", "3")
-CGSS2021_filter <- CGSS2021_filter %>% mutate(gov_satisfaction = factor(gov_satisfaction, levels = gov_order, ordered = TRUE))
 happy_order <- c("1", "2", "3",'4','5')
 CGSS2021_filter <- CGSS2021_filter %>% mutate(happiness = factor(happiness, levels = happy_order, ordered = TRUE))
 
 # Sort the data according to the specified order.
 custom_order <- c("NEP1", "NEP2", "NEP3",'NEP4','NEP5','NEP6','NEP7','NEP8','NEP9','NEP10','NEP11','NEP12','NEP13','NEP14',
-                  'NEP15','sex','age','happiness','gov_satisfaction','education','household_income','birth')#'rental','marriage',
+                  'NEP15','sex','age','happiness','education','household_income','birth')#'rental','marriage',
 CGSS2021_filter <- CGSS2021_filter %>% select(all_of(custom_order))
 CGSS2021_filter$Year <- 2021
 
 # Write the data before imputation (i.e., CGSS2021 in Supplementary Table 7).
 # write.csv(CGSS2021_filter, file = 'CGSS2021(插补前).csv', row.names = FALSE)
+
+# 排除出生年份和时间（因为其与age完全共线性）
+CGSS2021_filter <- subset(CGSS2021_filter, select = -c(Year, birth))
 
 # Data imputation
 impmice=mice(CGSS2021_filter,m=5,seed=2003)
@@ -482,36 +448,35 @@ for (i in 1:n_iterations) {
 
 
 ### 1.1.4 Figure 1 ====
-#### 1.1.4.1 Violin Plots ====
 # setwd('C:\\') Your own path
 CGSS2003 <- read.csv('CGSS2003(插补前).csv') # The data removed before imputation in section 1.2.1
 CGSS2010 <- read.csv('CGSS2010(插补前).csv') # The data removed before imputation in section 1.2.2
 CGSS2021 <- read.csv('CGSS2021(插补前).csv') # The data removed before imputation in section 1.2.3
 CGSS <- rbind(CGSS2003,CGSS2010,CGSS2021) 
 CGSS <- CGSS %>% mutate(cohort_cat = case_when(
-  birth >= 1921 & birth <= 1930 ~ 1,
-  birth >= 1931 & birth <= 1940 ~ 2,
-  birth >= 1941 & birth <= 1950 ~ 3,
-  birth >= 1951 & birth <= 1960 ~ 4,
-  birth >= 1961 & birth <= 1970 ~ 5,
-  birth >= 1971 & birth <= 1980 ~ 6,
-  birth >= 1981 & birth <= 1990 ~ 7,
-  birth >= 1991 & birth <= 2000 ~ 8,
-  birth >= 2001 & birth <= 2010 ~ 9,
+  birth >= 1920 & birth <= 1929 ~ 1,
+  birth >= 1930 & birth <= 1939 ~ 2,
+  birth >= 1940 & birth <= 1949 ~ 3,
+  birth >= 1950 & birth <= 1959 ~ 4,
+  birth >= 1960 & birth <= 1969 ~ 5,
+  birth >= 1970 & birth <= 1979 ~ 6,
+  birth >= 1980 & birth <= 1989 ~ 7,
+  birth >= 1990 & birth <= 1999 ~ 8,
+  birth >= 2000 & birth <= 2009 ~ 9,
   TRUE ~ NA_integer_  
 ))
 CGSS <- CGSS[!is.na(CGSS$cohort_cat), ] 
 CGSS <- CGSS %>%
   mutate(cohort_cat = recode(cohort_cat,
-                             `1` = "Cohort 1921-1930",
-                             `2` = "Cohort 1931-1940",
-                             `3` = "Cohort 1941-1950",
-                             `4` = "Cohort 1951-1960",
-                             `5` = "Cohort 1961-1970",
-                             `6` = "Cohort 1971-1980",
-                             `7` = "Cohort 1981-1990",
-                             `8` = "Cohort 1991-2000",
-                             `9` = "Cohort 2001-2010"))
+                             `1` = "1920-1929",
+                             `2` = "1930-1939",
+                             `3` = "1940-1949",
+                             `4` = "1950-1959",
+                             `5` = "1960-1969",
+                             `6` = "1970-1979",
+                             `7` = "1980-1989",
+                             `8` = "1990-1999",
+                             `9` = "2000-2009"))
 CGSS$Year <- as.factor(CGSS$Year)
 CGSS$cohort_cat <- as.factor(CGSS$cohort_cat)
 col_names_list_reset <- c( "NEP2", 'NEP4','NEP6','NEP8','NEP10','NEP12','NEP14')
@@ -527,76 +492,91 @@ for (col_name in col_names_list_reset) {
 }
 CGSS <- CGSS %>% mutate(CNEP=NEP1+NEP3+NEP5+NEP7+NEP8+NEP9+NEP10+NEP11+NEP13+NEP15)
 
-##### 1.1.4.1.1 Violin plot for different years ====
-p_period <- CGSS %>%
-  ggplot(aes(x = Year, y = CNEP, fill = Year)) +
-  geom_violin(width = 0.5, color = 'white', trim = TRUE) +  
-  scale_fill_manual(values = c("#7179AD", "#2F66AC", "#3FB2C4")) +
-  geom_boxplot(width = 0.1, color = "black", fill = 'white', alpha = 0.2) + 
-  theme(
-    legend.position = "none",
-    plot.title = element_text(size = 14, face = "bold", color = "black", hjust = 0.5),  
-    axis.title.x = element_text(size = 14, color = "black", margin = margin(t = 8)), 
-    axis.title.y = element_text(size = 14, color = "black"), 
-    axis.text.x = element_text(size = 10, color = "black", angle = 0, hjust = 0.5),  
-    axis.text.y = element_text(size = 10, color = "black"), 
-    panel.grid.major = element_blank(), 
-    panel.grid.minor = element_blank(),  
-    panel.background = element_rect(fill = "white", color = "black"), 
-    axis.ticks = element_line(color = "black") 
-  ) +
-  coord_cartesian(ylim = c(15, 51)) +
-  ggtitle(" ") + 
-  xlab("Year") + 
-  ylab(" ") 
+#### 1.1.4.1 Age-CNEP Period Plots ====
+point_colors <- c("#66c2a5", "#fc8d62", "#8da0cb")  # 温和的Set2颜色
+line_colors <- c("#4cd964", "#ff9500", "#8a6de9")   # 更亮的版本
 
-##### 1.1.4.1.2 Violin plot for different cohort ====
-CGSS$cohort_cat <- gsub("^Cohort ", "", CGSS$cohort_cat)
-p_cohort <- CGSS %>%
-  ggplot( aes(x=cohort_cat, y=CNEP, fill=cohort_cat)) +
-  geom_violin(width=0.5,color='white', adjust = 1) +
-  scale_fill_manual(values = c("#A0B8C1","#88A7B6", "#8C9A94","#9B8C8A", "#9C7A7A", "#7F6C8A","#7C7F8C","#6C7B7F","#6B6D75")) +
-  geom_boxplot(width=0.1, color="black",fill='white', alpha=0.2) +
-  theme(
-    legend.position = "none",
-    plot.title = element_text(size = 14, face = "bold", color = "black", hjust = 0.5),  
-    axis.title.x = element_text(size = 14, color = "black", margin = margin(t = 8)),
-    axis.title.y = element_text(size = 14, color = "black"),  
-    axis.text.x = element_text(size = 8, color = "black", angle = 0, hjust = 0.5), 
-    axis.text.y = element_text(size = 10, color = "black"), 
-    panel.grid.major = element_blank(), 
-    panel.grid.minor = element_blank(), 
-    panel.background = element_rect(fill = "white", color = "black"), 
-    axis.ticks = element_line(color = "black")  
+p1 <- ggplot(CGSS, aes(x = age, y = CNEP)) +
+  geom_point(aes(color = Year), 
+             size = 3.5, shape = 16, alpha = 0.1, 
+             show.legend = FALSE) +  
+  scale_color_manual(values = setNames(point_colors, levels(CGSS$Year))) +
+  new_scale_color() +
+  geom_smooth(aes(color = Year, group = Year), 
+              method = "loess", se = FALSE, size = 1.2, n = 10000) +
+  scale_color_manual(
+    name = "Year",  
+    values = setNames(line_colors, levels(CGSS$Year))
   ) +
-  coord_cartesian(ylim = c(15, 51)) +
-  ggtitle(" ") + 
-  xlab("Cohort") + 
-  ylab("CNEP Score")  
+  labs(x = "Age", y = "CNEP") +
+  theme_minimal()
 
-#### 1.1.4.2 Age Dot plot ====
-p_age <- ggplot(CGSS, aes(age, CNEP)) +
-  geom_point(size = 3.5, shape = 16 ,alpha = 0.1,color = "#3892AA", alpha = 0.6) +
-  geom_smooth(method = "lm",color = "black",se = T,fill = "grey") +
-  facet_grid( scales = "free_y") +
-  theme_classic() +
-  coord_cartesian(ylim = c(15, 52),xlim = c(20,80)) +
-  xlab("Age") +
-  ylab("CNEP Score") +
-  theme(
-    axis.title.x = element_text(size = 14, color = "black", margin = margin(t = 8)), 
-    axis.title.y = element_text(size = 14, color = "black"), 
-    axis.text.x = element_text(size = 10, color = "black"), 
-    axis.text.y = element_text(size = 10, color = "black"),  
-    plot.title = element_text(size = 14, face = "bold", color = "black", hjust = 0.5)  
-  )
+ggsave("Age_CNEP_Period_Plots.png", 
+       plot = p1,
+       width = 6,
+       height = 4,
+       dpi = 1200,
+       units = "in")    
+
+#### 1.1.4.1 Age-CNEP Cohort Plots ====
+point_colors_set2 <- c(
+  "#66c2a5",  # 1. 浅绿色
+  "#fc8d62",  # 2. 浅橙色
+  "#8da0cb",  # 3. 浅蓝紫色
+  "#e78ac3",  # 4. 浅粉色
+  "#a6d854",  # 5. 浅黄绿色
+  "#ffd92f",  # 6. 浅黄色
+  "#e5c494",  # 7. 浅米色
+  "#b3b3b3",  # 8. 浅灰色
+  "#80b1d3"   # 9. 补充：浅蓝色（来自Set3）
+)
+line_colors_brighter <- c(
+  "#2ecc71",  # 1. 亮绿色 (更亮)
+  "#ff7b24",  # 2. 亮橙色 (更亮)
+  "#5e9cf0",  # 3. 亮蓝紫色 (更亮)
+  "#ff6b9d",  # 4. 亮粉色 (更亮)
+  "#8cc63f",  # 5. 亮黄绿色 (更亮)
+  "#ffde17",  # 6. 亮黄色 (更亮)
+  "#f7b977",  # 7. 亮米色 (更亮)
+  "#808080",  # 8. 中灰色 (稍微深一点，因为浅灰不好调亮)
+  "#45b7d1"   # 9. 亮蓝色 (更亮)
+)
+
+p2 <- ggplot(CGSS, aes(x = age, y = CNEP)) +
+  geom_point(aes(color = cohort_cat), 
+             size = 3.5, shape = 16, alpha = 0.1, 
+             show.legend = FALSE) +  
+  scale_color_manual(values = setNames(point_colors_set2, levels(CGSS$cohort_cat))) +
+  new_scale_color() +
+  geom_smooth(aes(color = cohort_cat, group = cohort_cat), 
+              method = "loess", se = FALSE, size = 1.2, n = 10000) +
+  scale_color_manual(
+    name = "Cohort",  
+    values = setNames(line_colors_brighter, levels(CGSS$cohort_cat))
+  ) +
+  labs(x = "Age", y = "CNEP") +
+  theme_minimal()
+
+ggsave("Age_CNEP_Cohort_Plots.png", 
+       plot = p2,
+       width = 7,
+       height = 4,
+       dpi = 1200,
+       units = "in") 
+
+
 
 #### 1.1.4.3 Figure 1 ====
 library(patchwork)
-Figure1 <- (p_age | p_period) / p_cohort
+Figure1 <- (p1 | p2) 
 Figure1 <- Figure1 + plot_annotation(
   tag_levels = 'a') 
-Figure1
+ggsave("Figure1.png", 
+       plot = Figure1,
+       width = 10,
+       height = 4,
+       dpi = 1200,
+       units = "in") 
 
 
 ## 1.2 Combined the Imputed Datasets ====
@@ -614,15 +594,15 @@ for (i in 1:5) {
       file_2021 <- files_2021[k]
       
       # Read the data.(Your own path)
-      df_2003 <- read.csv(paste0("file path\\", file_2003))
-      df_2010 <- read.csv(paste0("file path\\", file_2010))
-      df_2021 <- read.csv(paste0("file path\\", file_2021))
+      df_2003 <- read.csv(paste0("D:\\博士阶段\\各类材料\\论文\\2026-APC\\数据\\插补后数据\\", file_2003))
+      df_2010 <- read.csv(paste0("D:\\博士阶段\\各类材料\\论文\\2026-APC\\数据\\插补后数据\\", file_2010))
+      df_2021 <- read.csv(paste0("D:\\博士阶段\\各类材料\\论文\\2026-APC\\数据\\插补后数据\\", file_2021))
       
       # Combined the data.
       combined_data <- rbind(df_2003, df_2010, df_2021)
       
       # Construct the output file path.
-      output_file <- paste0("file path\\", (i - 1) * 25 + (j - 1) * 5 + k, ".csv")
+      output_file <- paste0("D:\\博士阶段\\各类材料\\论文\\2026-APC\\数据\\插补后数据\\", (i - 1) * 25 + (j - 1) * 5 + k, ".csv")
       
       # Write to a new file.
       write.csv(combined_data, file = output_file, row.names = FALSE)
@@ -632,246 +612,12 @@ for (i in 1:5) {
 
 
 
-# 2. Separate Data Analyses ====
-# Separate data analyses for the five imputed datasets of each year
-# in 1.1.1  1.1.2  and  1.1.3
-
-## 2.1 CGSS2003 ====
-### 2.1.1 Read the data ====
-# setwd('D:\\') Your own path
-file_list <- list.files(pattern = "^.*\\.csv$")
-data_list <- lapply(file_list, read.csv)
-# Reverse the scores for reverse-coded questions.
-col_names_list_reset <- c( "NEP2", 'NEP4','NEP6','NEP8','NEP10','NEP12','NEP14')
-replace_values_NEP <- function(data, col_name) {
-  data[[col_name]] <- ifelse(data[[col_name]] == 1, 5,
-                             ifelse(data[[col_name]] == 2, 4,
-                                    ifelse(data[[col_name]] == 4, 2,
-                                           ifelse(data[[col_name]] == 5, 1, data[[col_name]]))))
-  return(data)
-}
-
-data_list_modified <- lapply(data_list, function(data) {
-  for (col_name in col_names_list_reset) {
-    data <- replace_values_NEP(data, col_name)
-  }
-  return(data)
-})
-
-# Calculate the age used in the analysis (AgeR:divide by ten and subtract 2), as well as its square, and calculate CNEP.
-data_list_modified <- lapply(data_list_modified, function(data) {
-  data <- data %>%
-    mutate(CNEP = NEP1 + NEP3 + NEP5 + NEP7 + NEP8 + NEP9 + NEP10 + NEP11 + NEP13 + NEP15)
-  data$AgeR = data$age/10 - 2
-  data$AgeR2 = data$AgeR^2
-  data <- data %>% mutate_at(vars(sex,Year,gov_satisfaction,happiness), as.factor)
-  return(data)
-})
-
-### 2.1.2 Data Analysis ====
-result_2003 <- data.frame()
-for (data in data_list_modified) {
-  result_tem <- data.frame()
-  fullmodel <- glm(CNEP ~ AgeR + AgeR2 + sex + happiness + gov_satisfaction + education + household_income ,
-                   data = data)
-  summary_fullmodel <- summary(fullmodel)
-  # age_effect & age_p
-  fixed_effect <- as.data.frame(summary_fullmodel$coefficients)
-  result_tem[1,'age_effect'] <- fixed_effect[2,1]
-  result_tem[1,'age_p'] <- fixed_effect[2,4]
-  
-  # age2_effect & age2_p
-  result_tem[1,'age2_effect'] <- fixed_effect[3,1]
-  result_tem[1,'age2_p'] <- fixed_effect[3,4]
-  
-  # Control Variables
-  result_tem[1,'female_effect'] <- fixed_effect[4,1]
-  result_tem[1,'female_p'] <- fixed_effect[4,4]
-  result_tem[1,'happiness.2_effect'] <- fixed_effect[5,1]
-  result_tem[1,'happiness.2_p'] <- fixed_effect[5,4]
-  result_tem[1,'happiness.3_effect'] <- fixed_effect[6,1]
-  result_tem[1,'happiness.3_p'] <- fixed_effect[6,4]
-  result_tem[1,'happiness.4_effect'] <- fixed_effect[7,1]
-  result_tem[1,'happiness.4_p'] <- fixed_effect[7,4]
-  result_tem[1,'happiness.5_effect'] <- fixed_effect[8,1]
-  result_tem[1,'happiness.5_p'] <- fixed_effect[8,4]
-  result_tem[1,'satisfaction.2_effect'] <- fixed_effect[9,1]
-  result_tem[1,'satisfaction.2_p'] <- fixed_effect[9,4]
-  result_tem[1,'satisfaction.3_effect'] <- fixed_effect[10,1]
-  result_tem[1,'satisfaction.3_p'] <- fixed_effect[10,4]
-  result_tem[1,'education_effect'] <- fixed_effect[11,1]
-  result_tem[1,'education_p'] <- fixed_effect[11,4]
-  result_tem[1,'household_income_effect'] <- fixed_effect[12,1]
-  result_tem[1,'household_income_p'] <- fixed_effect[12,4]
-  
-  result_tem[1,'r2m'] <- r.squaredGLMM(fullmodel)[,2]
-  
-
-  result_2003  <- rbind(result_2003 , result_tem)
-}
-# Output the results, i.e., the 2003 data in Supplementary Table 2.
-# write.csv(result_2003[,1:23], file = 'result2003.csv', row.names = FALSE)
-
-## 2.2 CGSS2010 ====
-### 2.2.1 Read the data ====
-# setwd('D:\\') Your own path
-file_list <- list.files(pattern = "^.*\\.csv$")
-data_list <- lapply(file_list, read.csv)
-# Reverse the scores for reverse-coded questions.
-col_names_list_reset <- c( "NEP2", 'NEP4','NEP6','NEP8','NEP10','NEP12','NEP14')
-replace_values_NEP <- function(data, col_name) {
-  data[[col_name]] <- ifelse(data[[col_name]] == 1, 5,
-                             ifelse(data[[col_name]] == 2, 4,
-                                    ifelse(data[[col_name]] == 4, 2,
-                                           ifelse(data[[col_name]] == 5, 1, data[[col_name]]))))
-  return(data)
-}
-
-data_list_modified <- lapply(data_list, function(data) {
-  for (col_name in col_names_list_reset) {
-    data <- replace_values_NEP(data, col_name)
-  }
-  return(data)
-})
-
-# Calculate the age used in the analysis (AgeR:divide by ten and subtract 2), as well as its square, and calculate CNEP.
-data_list_modified <- lapply(data_list_modified, function(data) {
-  data <- data %>%
-    mutate(CNEP = NEP1 + NEP3 + NEP5 + NEP7 + NEP8 + NEP9 + NEP10 + NEP11 + NEP13 + NEP15)
-  data$AgeR = data$age/10 - 2
-  data$AgeR2 = data$AgeR^2
-  data <- data %>% mutate_at(vars(sex,Year,gov_satisfaction,happiness), as.factor)
-  return(data)
-})
-
-### 2.2.2 Data Analysis ====
-result_2010 <- data.frame()
-for (data in data_list_modified) {
-  result_tem <- data.frame() 
-  fullmodel <- glm(CNEP ~ AgeR + AgeR2 + sex + happiness + gov_satisfaction + education + household_income ,
-                   data = data)
-  summary_fullmodel <- summary(fullmodel)
-  
-  # age_effect & age_p
-  fixed_effect <- as.data.frame(summary_fullmodel$coefficients)
-  result_tem[1,'age_effect'] <- fixed_effect[2,1]
-  result_tem[1,'age_p'] <- fixed_effect[2,4]
-  
-  # age2_effect & age2_p
-  result_tem[1,'age2_effect'] <- fixed_effect[3,1]
-  result_tem[1,'age2_p'] <- fixed_effect[3,4]
-  
-  # Control Variables
-  result_tem[1,'female_effect'] <- fixed_effect[4,1]
-  result_tem[1,'female_p'] <- fixed_effect[4,4]
-  result_tem[1,'happiness.2_effect'] <- fixed_effect[5,1]
-  result_tem[1,'happiness.2_p'] <- fixed_effect[5,4]
-  result_tem[1,'happiness.3_effect'] <- fixed_effect[6,1]
-  result_tem[1,'happiness.3_p'] <- fixed_effect[6,4]
-  result_tem[1,'happiness.4_effect'] <- fixed_effect[7,1]
-  result_tem[1,'happiness.4_p'] <- fixed_effect[7,4]
-  result_tem[1,'happiness.5_effect'] <- fixed_effect[8,1]
-  result_tem[1,'happiness.5_p'] <- fixed_effect[8,4]
-  result_tem[1,'satisfaction.2_effect'] <- fixed_effect[9,1]
-  result_tem[1,'satisfaction.2_p'] <- fixed_effect[9,4]
-  result_tem[1,'satisfaction.3_effect'] <- fixed_effect[10,1]
-  result_tem[1,'satisfaction.3_p'] <- fixed_effect[10,4]
-  result_tem[1,'education_effect'] <- fixed_effect[11,1]
-  result_tem[1,'education_p'] <- fixed_effect[11,4]
-  result_tem[1,'household_income_effect'] <- fixed_effect[12,1]
-  result_tem[1,'household_income_p'] <- fixed_effect[12,4]
-  
-  result_tem[1,'r2m'] <- r.squaredGLMM(fullmodel)[,2]
-  
-  result_2010  <- rbind(result_2010 , result_tem)
-}
-# Output the results, i.e., the 2010 data in Supplementary Table 2.
-# write.csv(result_2010[,1:23], file = 'result2010.csv', row.names = FALSE)
-
-## 2.3.CGSS2010 ====
-### 2.3.1 Read the data ====
-# setwd('D:\\') Your own path
-file_list <- list.files(pattern = "^.*\\.csv$")
-data_list <- lapply(file_list, read.csv)
-# Reverse the scores for reverse-coded questions.
-col_names_list_reset <- c( "NEP2", 'NEP4','NEP6','NEP8','NEP10','NEP12','NEP14')
-replace_values_NEP <- function(data, col_name) {
-  data[[col_name]] <- ifelse(data[[col_name]] == 1, 5,
-                             ifelse(data[[col_name]] == 2, 4,
-                                    ifelse(data[[col_name]] == 4, 2,
-                                           ifelse(data[[col_name]] == 5, 1, data[[col_name]]))))
-  return(data)
-}
-
-data_list_modified <- lapply(data_list, function(data) {
-  for (col_name in col_names_list_reset) {
-    data <- replace_values_NEP(data, col_name)
-  }
-  return(data)
-})
-
-# Calculate the age used in the analysis (AgeR:divide by ten and subtract 2), as well as its square, and calculate CNEP.
-data_list_modified <- lapply(data_list_modified, function(data) {
-  data <- data %>%
-    mutate(CNEP = NEP1 + NEP3 + NEP5 + NEP7 + NEP8 + NEP9 + NEP10 + NEP11 + NEP13 + NEP15)
-  data$AgeR = data$age/10 - 2
-  data$AgeR2 = data$AgeR^2
-  data <- data %>% mutate_at(vars(sex,Year,gov_satisfaction,happiness), as.factor)
-  return(data)
-})
-
-### 2.3.2 Data Analysis ====
-result_2021 <- data.frame()
-for (data in data_list_modified) {
-  result_tem <- data.frame() 
-  fullmodel <- glm(CNEP ~ AgeR + AgeR2 + sex + happiness + gov_satisfaction + education + household_income ,
-                   data = data)
-  summary_fullmodel <- summary(fullmodel)
-  
-  # age_effect & age_p
-  fixed_effect <- as.data.frame(summary_fullmodel$coefficients)
-  result_tem[1,'age_effect'] <- fixed_effect[2,1]
-  result_tem[1,'age_p'] <- fixed_effect[2,4]
-  
-  # age2_effect & age2_p
-  result_tem[1,'age2_effect'] <- fixed_effect[3,1]
-  result_tem[1,'age2_p'] <- fixed_effect[3,4]
-  
-  # Control Variables
-  result_tem[1,'female_effect'] <- fixed_effect[4,1]
-  result_tem[1,'female_p'] <- fixed_effect[4,4]
-  result_tem[1,'happiness.2_effect'] <- fixed_effect[5,1]
-  result_tem[1,'happiness.2_p'] <- fixed_effect[5,4]
-  result_tem[1,'happiness.3_effect'] <- fixed_effect[6,1]
-  result_tem[1,'happiness.3_p'] <- fixed_effect[6,4]
-  result_tem[1,'happiness.4_effect'] <- fixed_effect[7,1]
-  result_tem[1,'happiness.4_p'] <- fixed_effect[7,4]
-  result_tem[1,'happiness.5_effect'] <- fixed_effect[8,1]
-  result_tem[1,'happiness.5_p'] <- fixed_effect[8,4]
-  result_tem[1,'satisfaction.2_effect'] <- fixed_effect[9,1]
-  result_tem[1,'satisfaction.2_p'] <- fixed_effect[9,4]
-  result_tem[1,'satisfaction.3_effect'] <- fixed_effect[10,1]
-  result_tem[1,'satisfaction.3_p'] <- fixed_effect[10,4]
-  result_tem[1,'education_effect'] <- fixed_effect[11,1]
-  result_tem[1,'education_p'] <- fixed_effect[11,4]
-  result_tem[1,'household_income_effect'] <- fixed_effect[12,1]
-  result_tem[1,'household_income_p'] <- fixed_effect[12,4]
-  
-  result_tem[1,'r2m'] <- r.squaredGLMM(fullmodel)[,2]
-  
-  result_2021  <- rbind(result_2021 , result_tem)
-}
-# Output the results, i.e., the 2021 data in Supplementary Table 2.
-# write.csv(result_2021[,1:23], file = 'result2021.csv', row.names = FALSE)
-
-
-
-# 3. Main Statistical Analysis ====
-## 3.1 Main Analysis ====
+# 2. Main Statistical Analysis ====
+## 2.1 Main Analysis ====
 # The data analysis section of the main text.
 # 125 complete datasets
 
-### 3.1.1 Read the Data ====
+### 2.1.1 Read the Data ====
 # setwd('D:\\') Your own path
 # read all 125 complete datasets
 file_list <- list.files(pattern = "^.*\\.csv$")
@@ -903,28 +649,29 @@ data_list_modified <- lapply(data_list_modified, function(data) {
   data$AgeR = data$age/10 - 2
   data$AgeR2 = data$AgeR^2
   data <- data %>% mutate(cohort_cat = case_when(
-    birth >= 1921 & birth <= 1930 ~ 1,
-    birth >= 1931 & birth <= 1940 ~ 2,
-    birth >= 1941 & birth <= 1950 ~ 3,
-    birth >= 1951 & birth <= 1960 ~ 4,
-    birth >= 1961 & birth <= 1970 ~ 5,
-    birth >= 1971 & birth <= 1980 ~ 6,
-    birth >= 1981 & birth <= 1990 ~ 7,
-    birth >= 1991 & birth <= 2000 ~ 8,
-    birth >= 2001 & birth <= 2010 ~ 9,
+    birth >= 1920 & birth <= 1929 ~ 1,
+    birth >= 1930 & birth <= 1939 ~ 2,
+    birth >= 1940 & birth <= 1949 ~ 3,
+    birth >= 1950 & birth <= 1959 ~ 4,
+    birth >= 1960 & birth <= 1969 ~ 5,
+    birth >= 1970 & birth <= 1979 ~ 6,
+    birth >= 1980 & birth <= 1989 ~ 7,
+    birth >= 1990 & birth <= 1999 ~ 8,
+    birth >= 2000 & birth <= 2009 ~ 9,
     TRUE ~ NA_integer_  # Define the samples that do not belong to these generations as NA.
   ))
   data <- data[!is.na(data$cohort_cat), ] 
   data$cohort_cat <- as.factor(data$cohort_cat)
-  data <- data %>% mutate_at(vars(sex,Year,gov_satisfaction,happiness), as.factor)
+  data <- data %>% mutate_at(vars(sex,Year,happiness), as.factor)
+  data$birth_cent <- data$birth - mean(data$birth)
   return(data)
 })
 
-### 3.1.2 Perform Coarsened Exact Matching ====
+### 2.1.2 Perform Coarsened Exact Matching ====
 matstrict <- cem("Year", datalist=data_list_modified, drop=c('NEP1','NEP2','NEP3','NEP4','NEP5','NEP6','NEP7','NEP8','NEP9',
                                                              'NEP10','NEP11','NEP12','NEP13','NEP14','NEP15',
-                                                             'age','birth','Year','NEP','CNEP',
-                                                             'AgeR','AgeR2','cohort_cat'))
+                                                             'age','birth','Year','CNEP',
+                                                             'AgeR','AgeR2','cohort_cat','birth_cent'))
 matstrict
 matched_data_list <- list()
 for (i in seq_along(data_list)) {
@@ -932,509 +679,429 @@ for (i in seq_along(data_list)) {
   matched_data_list[[i]] <- data_list_modified[[i]][matstrict[[match_col]]$matched, ]
 }
 
-### 3.1.3 Construct the HAPC model for each matched dataset ====
+### 2.1.3 Construct the HAPC model for each matched dataset ====
 result_CNEP <- data.frame()
-for (data in matched_data_list) {
+for (i in 1:length(matched_data_list)) {
+  data <- matched_data_list[[i]]
   result_tem <- data.frame() 
   
-  fullmodel <- lmer(CNEP ~ AgeR + AgeR2 + sex + happiness + gov_satisfaction + education + household_income +
-                      + (1 | cohort_cat) + (1 | Year),data = data)
-  nullmodel <- glm(CNEP ~ sex + happiness + gov_satisfaction + education + household_income ,
-                   data = data)
+  fullmodel <- lmer(CNEP ~ AgeR + AgeR2 + birth_cent + sex + happiness + education + household_income
+                    + (1 | Year) + (1 | cohort_cat), data = data)
   summary_fullmodel <- summary(fullmodel)
   
-  # anova_p
-  anova <- anova(fullmodel,nullmodel)
-  result_tem[1,'anova_p'] <- anova$`Pr(>Chisq)`[2]
+  # Model information
+  result_tem[1,'Model'] <- paste0("data", i)
+  result_tem[1,'samplesize'] <- nrow(data)
   
-  # variance_cohort
+  # variance_cohort & variance_period & variance_Residual
   random_effects_var <- as.data.frame(VarCorr(fullmodel))
   result_tem[1,'variance_cohort'] <- random_effects_var[1,4]
-  
-  # cohort_p
-  significant <- ranova(fullmodel)
-  result_tem[1,'cohort_p'] <- significant$`Pr(>Chisq)`[2]
-  
-  # variance_period
   result_tem[1,'variance_period'] <- random_effects_var[2,4]
+  result_tem[1,'variance_Residual'] <- random_effects_var[3,4]
   
-  # period_p
-  result_tem[1,'period_p'] <- significant$`Pr(>Chisq)`[3]
+  # ICC
+  result_tem[1,'ICC_cohort'] <- random_effects_var[1,4] / (random_effects_var[1,4] + random_effects_var[2,4] + random_effects_var[3,4])
+  result_tem[1,'ICC_period'] <- random_effects_var[2,4] / (random_effects_var[1,4] + random_effects_var[2,4] + random_effects_var[3,4])
   
-  # Residual
-  result_tem[1,'Residual'] <- random_effects_var[3,4]
+  # cohort_p & period_p
+  significant <- ranova(fullmodel)
+  result_tem[1,'cohort_p'] <- significant['(1 | cohort_cat)','Pr(>Chisq)']
+  result_tem[1,'period_p'] <- significant['(1 | Year)','Pr(>Chisq)']
   
   # Cohort_effect1-9
-  Cohort_effect <- ranef(fullmodel)$cohort_cat
-  result_tem[1,'Cohort_effect1921-1930'] <- Cohort_effect[1,1]
-  result_tem[1,'Cohort_effect1931-1940'] <- Cohort_effect[2,1]
-  result_tem[1,'Cohort_effect1941-1950'] <- Cohort_effect[3,1]
-  result_tem[1,'Cohort_effect1951-1960'] <- Cohort_effect[4,1]
-  result_tem[1,'Cohort_effect1961-1970'] <- Cohort_effect[5,1]
-  result_tem[1,'Cohort_effect1971-1980'] <- Cohort_effect[6,1]
-  result_tem[1,'Cohort_effect1981-1990'] <- Cohort_effect[7,1]
-  result_tem[1,'Cohort_effect1991-2000'] <- Cohort_effect[8,1]
-  result_tem[1,'Cohort_effect2001-2010'] <- Cohort_effect[9,1]
+  re <- ranef(fullmodel, condVar = TRUE)  
   
-  # Period_effect2003-2021 
-  Period_effect <- ranef(fullmodel)$Year
-  result_tem[1,'Period_effect2003'] <- Period_effect[1,1]
-  result_tem[1,'Period_effect2010'] <- Period_effect[2,1]
-  result_tem[1,'Period_effect2021'] <- Period_effect[3,1]
+  cohort_re <- re$cohort_cat              
+  cohort_postvar <- attr(re$cohort_cat, "postVar") 
+  cohort_se <- sqrt(cohort_postvar[1,1,])
+  cohort_summary <- data.frame(
+    cohort = rownames(cohort_re),
+    intercept = cohort_re[,1],
+    lower = cohort_re[,1] - 1.96*cohort_se,
+    upper = cohort_re[,1] + 1.96*cohort_se
+  )
+  result_tem[1,'Cohort1920-1929_intercept'] <- cohort_summary[1,'intercept']
+  result_tem[1,'Cohort1920-1929_lower'] <- cohort_summary[1,'lower']
+  result_tem[1,'Cohort1920-1929_upper'] <- cohort_summary[1,'upper']
+  
+  result_tem[1,'Cohort1930-1939_intercept'] <- cohort_summary[2,'intercept']
+  result_tem[1,'Cohort1930-1939_lower'] <- cohort_summary[2,'lower']
+  result_tem[1,'Cohort1930-1939_upper'] <- cohort_summary[2,'upper']
+  
+  result_tem[1,'Cohort1940-1949_intercept'] <- cohort_summary[3,'intercept']
+  result_tem[1,'Cohort1940-1949_lower'] <- cohort_summary[3,'lower']
+  result_tem[1,'Cohort1940-1949_upper'] <- cohort_summary[3,'upper']
+  
+  result_tem[1,'Cohort1950-1959_intercept'] <- cohort_summary[4,'intercept']
+  result_tem[1,'Cohort1950-1959_lower'] <- cohort_summary[4,'lower']
+  result_tem[1,'Cohort1950-1959_upper'] <- cohort_summary[4,'upper']
+  
+  result_tem[1,'Cohort1960-1969_intercept'] <- cohort_summary[5,'intercept']
+  result_tem[1,'Cohort1960-1969_lower'] <- cohort_summary[5,'lower']
+  result_tem[1,'Cohort1960-1969_upper'] <- cohort_summary[5,'upper']
+  
+  result_tem[1,'Cohort1970-1979_intercept'] <- cohort_summary[6,'intercept']
+  result_tem[1,'Cohort1970-1979_lower'] <- cohort_summary[6,'lower']
+  result_tem[1,'Cohort1970-1979_upper'] <- cohort_summary[6,'upper']
+  
+  result_tem[1,'Cohort1980-1989_intercept'] <- cohort_summary[7,'intercept']
+  result_tem[1,'Cohort1980-1989_lower'] <- cohort_summary[7,'lower']
+  result_tem[1,'Cohort1980-1989_upper'] <- cohort_summary[7,'upper']
+  
+  result_tem[1,'Cohort1990-1999_intercept'] <- cohort_summary[8,'intercept']
+  result_tem[1,'Cohort1990-1999_lower'] <- cohort_summary[8,'lower']
+  result_tem[1,'Cohort1990-1999_upper'] <- cohort_summary[8,'upper']
+  
+  result_tem[1,'Cohort2000-2009_intercept'] <- cohort_summary[9,'intercept']
+  result_tem[1,'Cohort2000-2009_lower'] <- cohort_summary[9,'lower']
+  result_tem[1,'Cohort2000-2009_upper'] <- cohort_summary[9,'upper']
+  
+  # Period_effect_dis 2003\2010\2021
+  period_re <- re$Year             
+  period_postvar <- attr(re$Year, "postVar") 
+  period_se <- sqrt(period_postvar[1,1,])
+  period_summary <- data.frame(
+    period = rownames(period_re),
+    intercept = period_re[,1],
+    lower = period_re[,1] - 1.96*period_se,
+    upper = period_re[,1] + 1.96*period_se
+  )
+  result_tem[1,'Period2003_intercept'] <- period_summary[1,'intercept']
+  result_tem[1,'Period2003_lower'] <- period_summary[1,'lower']
+  result_tem[1,'Period2003_upper'] <- period_summary[1,'upper']
+  
+  result_tem[1,'Period2010_intercept'] <- period_summary[2,'intercept']
+  result_tem[1,'Period2010_lower'] <- period_summary[2,'lower']
+  result_tem[1,'Period2010_upper'] <- period_summary[2,'upper']
+  
+  result_tem[1,'Period2021_intercept'] <- period_summary[3,'intercept']
+  result_tem[1,'Period2021_lower'] <- period_summary[3,'lower']
+  result_tem[1,'Period2021_upper'] <- period_summary[3,'upper']
+  
+  
   
   # age_effect & age_p
   fixed_effect <- as.data.frame(summary_fullmodel$coefficients)
-  result_tem[1,'age_effect'] <- fixed_effect[2,1]
-  result_tem[1,'age_p'] <- fixed_effect[2,5]
+  result_tem[1,'age_effect'] <- fixed_effect["AgeR", "Estimate"]
+  result_tem[1,'age_p'] <- fixed_effect["AgeR", "Pr(>|t|)"]
   
   # age2_effect & age2_p
-  result_tem[1,'age2_effect'] <- fixed_effect[3,1]
-  result_tem[1,'age2_p'] <- fixed_effect[3,5]
+  result_tem[1,'age2_effect'] <- fixed_effect["AgeR2", "Estimate"]
+  result_tem[1,'age2_p'] <- fixed_effect["AgeR2", "Pr(>|t|)"]
+  
+  # Cohort_effect_con & p
+  result_tem[1,'Cohort_con_effect'] <- fixed_effect["birth_cent", "Estimate"]
+  result_tem[1,'Cohort_con_p'] <- fixed_effect["birth_cent", "Pr(>|t|)"]
   
   # Control Variables
-  result_tem[1,'female_effect'] <- fixed_effect[4,1]
-  result_tem[1,'female_p'] <- fixed_effect[4,5]
-  result_tem[1,'happiness.2_effect'] <- fixed_effect[5,1]
-  result_tem[1,'happiness.2_p'] <- fixed_effect[5,5]
-  result_tem[1,'happiness.3_effect'] <- fixed_effect[6,1]
-  result_tem[1,'happiness.3_p'] <- fixed_effect[6,5]
-  result_tem[1,'happiness.4_effect'] <- fixed_effect[7,1]
-  result_tem[1,'happiness.4_p'] <- fixed_effect[7,5]
-  result_tem[1,'happiness.5_effect'] <- fixed_effect[8,1]
-  result_tem[1,'happiness.5_p'] <- fixed_effect[8,5]
-  result_tem[1,'satisfaction.2_effect'] <- fixed_effect[9,1]
-  result_tem[1,'satisfaction.2_p'] <- fixed_effect[9,5]
-  result_tem[1,'satisfaction.3_effect'] <- fixed_effect[10,1]
-  result_tem[1,'satisfaction.3_p'] <- fixed_effect[10,5]
-  result_tem[1,'education_effect'] <- fixed_effect[11,1]
-  result_tem[1,'education_p'] <- fixed_effect[11,5]
-  result_tem[1,'household_income_effect'] <- fixed_effect[12,1]
-  result_tem[1,'household_income_p'] <- fixed_effect[12,5]
+  result_tem[1,'female_effect'] <- fixed_effect["sex2", "Estimate"]
+  result_tem[1,'female_p'] <- fixed_effect["sex2", "Pr(>|t|)"]
+  result_tem[1,'education_effect'] <- fixed_effect['education',"Estimate"]
+  result_tem[1,'education_p'] <- fixed_effect['education',"Pr(>|t|)"]
+  result_tem[1,'household_income_effect'] <- fixed_effect['household_income',"Estimate"]
+  result_tem[1,'household_income_p'] <- fixed_effect['household_income',"Pr(>|t|)"]
+  result_tem[1,'happiness.2_effect'] <- fixed_effect["happiness2", "Estimate"]
+  result_tem[1,'happiness.2_p'] <- fixed_effect["happiness2","Pr(>|t|)"]
+  result_tem[1,'happiness.3_effect'] <- fixed_effect["happiness3","Estimate"]
+  result_tem[1,'happiness.3_p'] <- fixed_effect["happiness3","Pr(>|t|)"]
+  result_tem[1,'happiness.4_effect'] <- fixed_effect["happiness4","Estimate"]
+  result_tem[1,'happiness.4_p'] <- fixed_effect["happiness4","Pr(>|t|)"]
+  result_tem[1,'happiness.5_effect'] <- fixed_effect["happiness5","Estimate"]
+  result_tem[1,'happiness.5_p'] <- fixed_effect["happiness5","Pr(>|t|)"]
   
-  # R2
-  r2 <- r.squaredGLMM(fullmodel)
-  result_tem[1,'HAPC_r2m'] <- r2[,1]
-  result_tem[1,'HAPC_r2c'] <- r2[,2]
-  result_tem[1,'nullmodel_r2m'] <- r.squaredGLMM(nullmodel)[,2]
-  
-
   result_CNEP <- rbind(result_CNEP, result_tem)
 }
-# write.csv(result_CNEP[,41:43], file = 'result_CNEP_R2.csv', row.names = FALSE)
-# write.csv(result_CNEP[,1:40], file = 'result_CNEP.csv', row.names = FALSE)
+# write.csv(result_CNEP[,1:65], file = 'result_CNEP.csv', row.names = FALSE)
+# write.csv(result_CNEP[,10:36], file = 'result_cohort_random.csv', row.names = FALSE)
+# write.csv(result_CNEP[,37:45], file = 'result_period_random.csv', row.names = FALSE)
 # These two combined form Supplementary Table 1.
 # For convenience in plotting, store them in two separate files here, and do not consider R2 when plotting.
 
-### 3.1.4 Figure 2 ====
-result_CNEP <- read.csv('result_CNEP.csv') # The result_CNEP.csv in section 3.1.3 (the version without R2)
-
-# Test each p-value.
-t.test(result_CNEP$cohort_p, mu = 0.05, alternative = "less") #p-value = 1 
-t.test(result_CNEP$period_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP$age_p, mu = 0.05, alternative = "less") #p-value < 2.2e-16 *
-t.test(result_CNEP$age2_p, mu = 0.05, alternative = "less") #p-value < 2.2e-16 *
-t.test(result_CNEP$female_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP$happiness.2_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP$happiness.3_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP$happiness.4_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP$happiness.5_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP$satisfaction.2_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP$satisfaction.3_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP$education_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP$household_income_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-
-names(result_CNEP)[names(result_CNEP) == "age_effect"] <- "Age"
-names(result_CNEP)[names(result_CNEP) == "age2_effect"] <- "Age-quadratic"
-names(result_CNEP)[names(result_CNEP) == "female_effect"] <- "Female(Ref:male)"
-names(result_CNEP)[names(result_CNEP) == "happiness.2_effect"] <- "unhappy(Ref:Extremely unhappy)"
-names(result_CNEP)[names(result_CNEP) == "happiness.3_effect"] <- "Neutral(Ref:Extremely unhappy)"
-names(result_CNEP)[names(result_CNEP) == "happiness.4_effect"] <- "happy(Ref:Extremely unhappy)"
-names(result_CNEP)[names(result_CNEP) == "happiness.5_effect"] <- "Extremely happy(Ref:Extremely unhappy)"
-names(result_CNEP)[names(result_CNEP) == "satisfaction.2_effect"] <- "Neutral(Ref:dissatisfied)"
-names(result_CNEP)[names(result_CNEP) == "satisfaction.3_effect"] <- "Satisfied(Ref:dissatisfied)"
-names(result_CNEP)[names(result_CNEP) == "education_effect"] <- "Education"
-names(result_CNEP)[names(result_CNEP) == "household_income_effect"] <- "Household income"
-
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1921.1930"] <- "Cohort 1921-1930"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1931.1940"] <- "Cohort 1931-1940"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1941.1950"] <- "Cohort 1941-1950"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1951.1960"] <- "Cohort 1951-1960"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1961.1970"] <- "Cohort 1961-1970"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1971.1980"] <- "Cohort 1971-1980"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1981.1990"] <- "Cohort 1981-1990"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1991.2000"] <- "Cohort 1991-2000"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect2001.2010"] <- "Cohort 2001-2010"
-names(result_CNEP)[names(result_CNEP) == "Period_effect2003"] <- "Period 2003"
-names(result_CNEP)[names(result_CNEP) == "Period_effect2010"] <- "Period 2010"
-names(result_CNEP)[names(result_CNEP) == "Period_effect2021"] <- "Period 2021"
-
-CNEP_order <- c("Age", "Age-quadratic","Period 2003","Period 2010","Period 2021",
-                "Cohort 1921-1930","Cohort 1931-1940","Cohort 1941-1950","Cohort 1951-1960",
-                "Cohort 1961-1970","Cohort 1971-1980","Cohort 1981-1990","Cohort 1991-2000",
-                "Cohort 2001-2010")
-result_CNEP <- result_CNEP %>% select(all_of(CNEP_order))
-CNEP <- melt(result_CNEP)
-colnames(CNEP) <- c('sample','value')
-CNEP$sample <- as.character(CNEP$sample)
-CNEP <- CNEP[!grepl("_p$", CNEP$sample), ]
-CNEP <- CNEP[!grepl("^variance", CNEP$sample), ]
-CNEP <- CNEP[!grepl("^Resid", CNEP$sample), ]
-CNEP$group <- ifelse(CNEP$sample %in% c("Age", "Age-quadratic",'Female(Ref:male)','unhappy(Ref:Extremely unhappy)','Neutral(Ref:Extremely unhappy)',
-                                        'happy(Ref:Extremely unhappy)','Extremely happy(Ref:Extremely unhappy)','Neutral(Ref:dissatisfied)','Satisfied(Ref:dissatisfied)',
-                                        'Education','Household income'), "fix", "random")
-CNEP <- CNEP[rev(seq_len(nrow(CNEP))), ]
-unique_strings <- unique(unlist(CNEP$sample))
-CNEP$sample <- factor(CNEP$sample,levels = unique_strings)
-CNEP$group <- as.factor(CNEP$group)
-CNEP$facet <- rep("APC effect",times=1750)
-
-CNEP <- CNEP %>%
-  mutate(facet = case_when(
-    grepl("^Cohort", sample) ~ "Cohort effect",
-    grepl("^Period", sample) ~ "Period effect ***",
-    grepl("^Age", sample) ~ "Age effect",
-    TRUE ~ facet 
-  ))
-
-CNEPage <- CNEP[1501:1750,]
-CNEPcohort <- CNEP[1:1125,]
-CNEPperiod <- CNEP[1126:1500,]
-
-#### 3.1.4.1 Age Part ====
-p <- ggplot(CNEPage,aes(sample,value))+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.5,linewidth=0.5)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.5)
-CNEPage %>% 
-  group_by(sample) %>% 
-  summarise(mean_value=mean(value)) %>%
-  cbind(ggplot_build(p)$data[[1]]) -> mean
-
-p_apcage <- ggplot(CNEPage,aes(sample,value))+
-  geom_hline(yintercept = 0, linetype = 2, color = "grey60",linewidth=0.8)+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.3,size=0.6)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.6)+
-  geom_segment(mean,
-               mapping=aes(x=xmin-0.25,xend=xmax+0.25,y=mean_value,yend=mean_value),
-               color="white",size=0.5)+
-  coord_flip()+
-  scale_fill_manual(values = c("#459f81"))+
-  scale_color_manual(values = c("#459f81"))+
-  scale_y_continuous(limits = c(-0.6, 0.6))+
-  scale_x_discrete(labels = function(x) gsub("Age-quadratic", "Age²", x)) +  
-  theme_bw()+
-  theme(legend.position = "none",
-        panel.grid = element_blank(),
-        axis.text = element_text(color = "black",size=11),
-        strip.background = element_rect(fill = "grey", color = "transparent"),
-        strip.text = element_text(color="black",size=13))+
-  labs(y="Coefficient",x=NULL)+
-  annotate("rect", xmin = 0, xmax = 3, ymin = -Inf, ymax = Inf, alpha = 0.2,fill="white") +
-  annotate('text', label = '*', x =2, y =0.5, angle=-90, size =8,color="black") + 
-  annotate('text', label = '*', x =1, y =-0.12, angle=-90, size =8,color="black") + 
-  facet_grid(~ facet)
-p_apcage
-
-#### 3.1.4.2 Cohort Part ====
-CNEPcohort$sample <- gsub("^Cohort ", "", CNEPcohort$sample)
-CNEPcohort <- CNEPcohort %>%
-  mutate(sample = factor(sample, levels = c("2001-2010", "1991-2000",'1981-1990','1971-1980','1961-1970',
-                                            '1951-1960','1941-1950','1931-1940','1921-1930')))
-
-p <- ggplot(CNEPcohort,aes(sample,value))+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.5,linewidth=0.5)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.5)
-p
-CNEPcohort %>% 
-  group_by(sample) %>% 
-  summarise(mean_value=mean(value)) %>%
-  cbind(ggplot_build(p)$data[[1]]) -> mean
-
-p_apccohort <- ggplot(CNEPcohort,aes(sample,value))+
-  geom_hline(yintercept = 0, linetype = 2, color = "grey60",linewidth=0.8)+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.3,size=0.6)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.6)+
-  geom_segment(mean,
-               mapping=aes(x=xmin-0.25,xend=xmax+0.25,y=mean_value,yend=mean_value),
-               color="white",size=0.5)+
-  coord_flip()+
-  scale_fill_manual(values = c("#3769AE"))+
-  scale_color_manual(values = c("#3769AE"))+
-  scale_y_continuous(limits = c(-0.3, 0.3))+
-  scale_x_discrete(labels = function(x) gsub("Age-quadratic", "Age²", x)) +  
-  theme_bw()+
-  theme(legend.position = "none",
-        panel.grid = element_blank(),
-        axis.text = element_text(color = "black",size=11),
-        strip.background = element_rect(fill = "grey", color = "transparent"),
-        strip.text = element_text(color="black",size=13))+
-  labs(y="Random Intercept",x=NULL)+
-  annotate("rect", xmin = 0, xmax = 9.6, ymin = -Inf, ymax = Inf, alpha = 0.2,fill="white") +
-  facet_grid(~ facet)
-p_apccohort
-
-
-#### 3.1.4.3 Period Part ====
-CNEPperiod$sample <- gsub("^Period ", "", CNEPperiod$sample)
-CNEPperiod <- CNEPperiod %>%
-  mutate(sample = factor(sample, levels = c("2021", "2010",'2003')))
-
-p <- ggplot(CNEPperiod,aes(sample,value))+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.5,linewidth=0.5)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.5)
-p
-CNEPperiod %>% 
-  group_by(sample) %>% 
-  summarise(mean_value=mean(value)) %>%
-  cbind(ggplot_build(p)$data[[1]]) -> mean
-
-p_apcperiod <- ggplot(CNEPperiod,aes(sample,value))+
-  geom_hline(yintercept = 0, linetype = 2, color = "grey60",linewidth=0.8)+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.3,size=0.6)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.6)+
-  geom_segment(mean,
-               mapping=aes(x=xmin-0.25,xend=xmax+0.25,y=mean_value,yend=mean_value),
-               color="white",size=0.5)+
-  coord_flip()+
-  scale_fill_manual(values = c("#3769AE"))+
-  scale_color_manual(values = c("#3769AE"))+
-  scale_y_continuous(limits = c(-2, 2))+
-  scale_x_discrete(labels = function(x) gsub("Age-quadratic", "Age²", x)) + 
-  theme_bw()+
-  theme(legend.position = "none",
-        panel.grid = element_blank(),
-        axis.text = element_text(color = "black",size=11),
-        strip.background = element_rect(fill = "grey", color = "transparent"),
-        strip.text = element_text(color="black",size=13))+
-  labs(y="Random Intercept",x=NULL)+
-  annotate("rect", xmin = 0, xmax = 3.6, ymin = -Inf, ymax = Inf, alpha = 0.2,fill="white") +
-  facet_grid(~ facet)
-p_apcperiod
-
-#### 3.1.4.4 Figure 2 ====
-Figure2 <- p_apcage / p_apcperiod / p_apccohort + 
-  plot_layout(heights = c(2.2, 3, 9))
-Figure2
-
-### 3.1.5 Extended Data Fig1 ====
-plot_model <- function(data, index) {
-  model <- lmer(CNEP ~ AgeR + I(AgeR^2) + sex + happiness + gov_satisfaction + 
-                  education + household_income + (1 | cohort_cat) + (1 | Year), 
-                data = data)
-  pred <- ggeffect(model, terms = "AgeR [all]")
-  p <- ggplot(pred, aes(x = x, y = predicted)) +
-    geom_line(size = 1, color = "blue") + 
-    geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2, fill = "blue") +
-    labs(x = "AgeR", y = "Predicted CNEP", title = paste("Dataset", index)) +
-    theme_minimal()
-  return(p)
+### 2.1.4 Table 1 ====
+result_CNEP <- read.csv('result_CNEP.csv')
+extract_and_summarize <- function(df) {
+  # 指定要提取的列名
+  selected_cols <- c(
+    "variance_cohort", "variance_period", "variance_Residual",
+    "ICC_cohort", "ICC_period",
+    "cohort_p", "period_p",
+    "age_effect", "age_p",
+    "age2_effect", "age2_p",
+    "Cohort_con_effect", "Cohort_con_p",
+    "female_effect", "female_p",
+    "education_effect", "education_p",
+    "household_income_effect", "household_income_p",
+    "happiness.2_effect", "happiness.2_p",
+    "happiness.3_effect", "happiness.3_p",
+    "happiness.4_effect", "happiness.4_p",
+    "happiness.5_effect", "happiness.5_p"
+  )
+  # 检查哪些列实际存在于数据框中
+  existing_cols <- selected_cols[selected_cols %in% names(df)]
+  if(length(existing_cols) == 0) {
+    stop("没有找到指定的列")
+  }
+  if(length(existing_cols) < length(selected_cols)) {
+    missing_cols <- setdiff(selected_cols, existing_cols)
+    warning(paste("以下列不存在：", paste(missing_cols, collapse = ", ")))
+  }
+  # 提取数据并计算统计量
+  result <- data.frame(
+    Variable = existing_cols,
+    Mean = sapply(df[existing_cols], mean, na.rm = TRUE),
+    Variance = sapply(df[existing_cols], var, na.rm = TRUE)
+  )
+  # 设置行名
+  rownames(result) <- NULL
+  return(result)
 }
 
-plots <- map2(matched_data_list, 1:length(data_list), plot_model)
+# 使用函数
+summary_stats <- extract_and_summarize(result_CNEP)
+print(summary_stats)
 
-ExtendedDataFig1 <- wrap_plots(plots) + plot_layout(ncol = 10)  
-ggsave("ExtendedDataFig1.png", ExtendedDataFig1, width = 20, height = 25, units = "in", dpi = 300)
-print(ExtendedDataFig1)
+write.csv(summary_stats[,1:3], file = 'Table1.csv', row.names = FALSE)
 
-### 3.1.6 Supplementary Fig. 1 ====
-result_CNEP <- read.csv('result_CNEP.csv') # The result_CNEP.csv in section 3.1.3 (the version without R2)
-t.test(result_CNEP$cohort_p, mu = 0.05, alternative = "less") #p-value = 1 
-t.test(result_CNEP$period_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP$age_p, mu = 0.05, alternative = "less") #p-value < 2.2e-16 *
-t.test(result_CNEP$age2_p, mu = 0.05, alternative = "less") #p-value < 2.2e-16 *
-t.test(result_CNEP$female_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP$happiness.2_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP$happiness.3_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP$happiness.4_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP$happiness.5_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP$satisfaction.2_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP$satisfaction.3_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP$education_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP$household_income_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
 
-names(result_CNEP)[names(result_CNEP) == "age_effect"] <- "Age"
-names(result_CNEP)[names(result_CNEP) == "age2_effect"] <- "Age-quadratic"
-names(result_CNEP)[names(result_CNEP) == "female_effect"] <- "Female(Ref:male)"
-names(result_CNEP)[names(result_CNEP) == "happiness.2_effect"] <- "unhappy(Ref:Extremely unhappy)"
-names(result_CNEP)[names(result_CNEP) == "happiness.3_effect"] <- "Neutral(Ref:Extremely unhappy)"
-names(result_CNEP)[names(result_CNEP) == "happiness.4_effect"] <- "happy(Ref:Extremely unhappy)"
-names(result_CNEP)[names(result_CNEP) == "happiness.5_effect"] <- "Extremely happy(Ref:Extremely unhappy)"
-names(result_CNEP)[names(result_CNEP) == "satisfaction.2_effect"] <- "Neutral(Ref:dissatisfied)"
-names(result_CNEP)[names(result_CNEP) == "satisfaction.3_effect"] <- "Satisfied(Ref:dissatisfied)"
-names(result_CNEP)[names(result_CNEP) == "education_effect"] <- "Education"
-names(result_CNEP)[names(result_CNEP) == "household_income_effect"] <- "Household income"
+### 2.1.5 Figure 2 ====
+df_cohort_random <- read.csv('result_cohort_random.csv')
 
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1921.1930"] <- "Cohort 1921-1930"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1931.1940"] <- "Cohort 1931-1940"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1941.1950"] <- "Cohort 1941-1950"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1951.1960"] <- "Cohort 1951-1960"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1961.1970"] <- "Cohort 1961-1970"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1971.1980"] <- "Cohort 1971-1980"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1981.1990"] <- "Cohort 1981-1990"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect1991.2000"] <- "Cohort 1991-2000"
-names(result_CNEP)[names(result_CNEP) == "Cohort_effect2001.2010"] <- "Cohort 2001-2010"
-names(result_CNEP)[names(result_CNEP) == "Period_effect2003"] <- "Period 2003"
-names(result_CNEP)[names(result_CNEP) == "Period_effect2010"] <- "Period 2010"
-names(result_CNEP)[names(result_CNEP) == "Period_effect2021"] <- "Period 2021"
+intercept_cols <- grep("_intercept$", names(df_cohort_random), value = TRUE)
+df_long_cohort_random <- df_cohort_random %>%
+  select(all_of(intercept_cols)) %>%
+  pivot_longer(cols = everything(), 
+               names_to = "cohort", 
+               values_to = "intercept") %>%
+  mutate(period = gsub("_intercept", "", cohort))
+df_long_cohort_random <- df_long_cohort_random %>%
+  mutate(cohort = recode(cohort,
+                         `Cohort1920.1929_intercept` = "1920-1929",
+                         `Cohort1930.1939_intercept` = "1930-1939",
+                         `Cohort1940.1949_intercept` = "1940-1949",
+                         `Cohort1950.1959_intercept` = "1950-1959",
+                         `Cohort1960.1969_intercept` = "1960-1969",
+                         `Cohort1970.1979_intercept` = "1970-1979",
+                         `Cohort1980.1989_intercept` = "1980-1989",
+                         `Cohort1990.1999_intercept` = "1990-1999",
+                         `Cohort2000.2009_intercept` = "2000-2009"))
 
-CNEP_order <- c("Age", "Age-quadratic","Female(Ref:male)","unhappy(Ref:Extremely unhappy)","Neutral(Ref:Extremely unhappy)",
-                "happy(Ref:Extremely unhappy)","Extremely happy(Ref:Extremely unhappy)","Neutral(Ref:dissatisfied)",
-                "Satisfied(Ref:dissatisfied)","Education","Household income",
-                "Period 2003","Period 2010","Period 2021",
-                "Cohort 1921-1930","Cohort 1931-1940","Cohort 1941-1950","Cohort 1951-1960",
-                "Cohort 1961-1970","Cohort 1971-1980","Cohort 1981-1990","Cohort 1991-2000",
-                "Cohort 2001-2010")
-result_CNEP <- result_CNEP %>% select(all_of(CNEP_order))
-CNEP <- melt(result_CNEP)
-colnames(CNEP) <- c('sample','value')
-CNEP$sample <- as.character(CNEP$sample)
-CNEP <- CNEP[!grepl("_p$", CNEP$sample), ]
-CNEP <- CNEP[!grepl("^variance", CNEP$sample), ]
-CNEP <- CNEP[!grepl("^Resid", CNEP$sample), ]
-CNEP$group <- ifelse(CNEP$sample %in% c("Age", "Age-quadratic",'Female(Ref:male)','unhappy(Ref:Extremely unhappy)','Neutral(Ref:Extremely unhappy)',
-                                        'happy(Ref:Extremely unhappy)','Extremely happy(Ref:Extremely unhappy)','Neutral(Ref:dissatisfied)','Satisfied(Ref:dissatisfied)',
-                                        'Education','Household income'), "fix", "random")
-CNEP <- CNEP[rev(seq_len(nrow(CNEP))), ]
-unique_strings <- unique(unlist(CNEP$sample))
-CNEP$sample <- factor(CNEP$sample,levels = unique_strings)
-CNEP$group <- as.factor(CNEP$group)
-CNEP$facet <- rep("APC effect",times=2875)
+p_cohort_random <- df_long_cohort_random %>%
+  ggplot( aes(x=cohort, y=intercept, fill=cohort)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 0.8, alpha = 0.7) +
+  geom_violin(width=1.1,color='white', adjust = 5,trim = FALSE) +
+  scale_fill_manual(values = c(  "#66c2a5",  # 1. 浅绿色
+                                 "#fc8d62",  # 2. 浅橙色
+                                 "#8da0cb",  # 3. 浅蓝紫色
+                                 "#e78ac3",  # 4. 浅粉色
+                                 "#a6d854",  # 5. 浅黄绿色
+                                 "#ffd92f",  # 6. 浅黄色
+                                 "#e5c494",  # 7. 浅米色
+                                 "#b3b3b3",  # 8. 浅灰色
+                                 "#80b1d3")) +
+  geom_boxplot(width=0.35, color="black",fill='white', alpha=0.2, outlier.shape = NA) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 16, face = "bold", color = "black", hjust = 0.5),  
+    axis.title.x = element_text(size = 14, color = "black", margin = margin(t = 8)),
+    axis.title.y = element_text(size = 14, color = "black"),  
+    axis.text.x = element_text(size = 10, color = "black", angle = 45, hjust = 1, vjust = 1, margin = margin(t = 5)), 
+    axis.text.y = element_text(size = 10, color = "black"), 
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20, unit = "pt"),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.background = element_rect(fill = "white", color = "black"), 
+    axis.ticks = element_line(color = "black")  
+  ) +
+  coord_cartesian(ylim = c(-0.3, 0.3)) +
+  ggtitle("Cohort Level Intercept") + 
+  xlab("Cohort") + 
+  ylab("Intercept") 
+p_cohort_random
 
-CNEP <- CNEP %>%
-  mutate(facet = case_when(
-    grepl("^Cohort", sample) ~ "Cohort effect",
-    grepl("^Period", sample) ~ "Period effect ***",
-    TRUE ~  "Fixed effect"  
-  ))
 
-CNEPage <- CNEP[1501:2875,]
-CNEPcohort <- CNEP[1:1125,]
-CNEPperiod <- CNEP[1126:1500,]
+df_period_random <- read.csv('result_period_random.csv')
 
-#### 3.1.6.1 Age Part ====
-p <- ggplot(CNEPage,aes(sample,value))+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.5,linewidth=0.5)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.5)
-CNEPage %>% 
-  group_by(sample) %>% 
-  summarise(mean_value=mean(value)) %>%
-  cbind(ggplot_build(p)$data[[1]]) -> mean
+intercept_cols <- grep("_intercept$", names(df_period_random), value = TRUE)
+df_long_period_random <- df_period_random %>%
+  select(all_of(intercept_cols)) %>%
+  pivot_longer(cols = everything(), 
+               names_to = "period", 
+               values_to = "intercept") %>%
+  mutate(period = gsub("_intercept", "", period))
+df_long_period_random <- df_long_period_random %>%
+  mutate(period = recode(period,
+                         `Period2003` = "2003",
+                         `Period2010` = "2010",
+                         `Period2021` = "2021"))
 
-p_apcage <- ggplot(CNEPage,aes(sample,value))+
-  geom_hline(yintercept = 0, linetype = 2, color = "grey60",linewidth=0.8)+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.3,size=0.6)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.6)+
-  geom_segment(mean,
-               mapping=aes(x=xmin-0.25,xend=xmax+0.25,y=mean_value,yend=mean_value),
-               color="white",size=0.5)+
-  coord_flip()+
-  scale_fill_manual(values = c("#459f81"))+
-  scale_color_manual(values = c("#459f81"))+
-  scale_y_continuous(limits = c(-2, 2))+
-  scale_x_discrete(labels = function(x) gsub("Age-quadratic", "Age²", x)) +  
-  theme_bw()+
-  theme(legend.position = "none",
-        panel.grid = element_blank(),
-        axis.text = element_text(color = "black",size=11),
-        strip.background = element_rect(fill = "grey", color = "transparent"),
-        strip.text = element_text(color="black",size=13))+
-  labs(y="Coefficient",x=NULL)+
-  annotate("rect", xmin = 0, xmax = 3, ymin = -Inf, ymax = Inf, alpha = 0.2,fill="white") +
-  annotate('text', label = '*', x =11, y =0.52, angle=-90, size =8,color="black") + 
-  annotate('text', label = '*', x =10, y =-0.2, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =9, y =-0.55, angle=-90, size =8,color="black") + 
-  annotate('text', label = '*', x =8, y =-3, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =4, y =-1.3, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =3, y =-0.87, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =2, y =0.44, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =1, y =1.25, angle=-90, size =8,color="black") + 
-  facet_grid(~ facet)
-p_apcage
+p_period_random <- df_long_period_random %>%
+  ggplot( aes(x=period, y=intercept, fill=period)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black", size = 0.8, alpha = 0.7) +
+  geom_violin(width=1,color='white', adjust = 5,trim = FALSE) +
+  scale_fill_manual(values = c(  "#66c2a5",  # 1. 浅绿色
+                                 "#fc8d62",  # 2. 浅橙色
+                                 "#8da0cb"  # 3. 浅蓝紫色
+  )) +
+  geom_boxplot(width=0.2, color="black",fill='white', alpha=0.2, outlier.shape = NA) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 16, face = "bold", color = "black", hjust = 0.5),  
+    axis.title.x = element_text(size = 14, color = "black", margin = margin(t = 8)),
+    axis.title.y = element_text(size = 14, color = "black"),  
+    axis.text.x = element_text(size = 10, color = "black", angle = 45, hjust = 1, vjust = 1, margin = margin(t = 5)), 
+    axis.text.y = element_text(size = 10, color = "black"), 
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20, unit = "pt"),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(), 
+    panel.background = element_rect(fill = "white", color = "black"), 
+    axis.ticks = element_line(color = "black")  
+  ) +
+  coord_cartesian(ylim = c(-0.8, 0.8)) +
+  ggtitle("Period Level Intercept") + 
+  xlab("Period") + 
+  ylab("Intercept") 
+p_period_random
 
-#### 3.1.6.2 Cohort Part ====
-CNEPcohort$sample <- gsub("^Cohort ", "", CNEPcohort$sample)
-CNEPcohort <- CNEPcohort %>%
-  mutate(sample = factor(sample, levels = c("2001-2010", "1991-2000",'1981-1990','1971-1980','1961-1970',
-                                            '1951-1960','1941-1950','1931-1940','1921-1930')))
 
-p <- ggplot(CNEPcohort,aes(sample,value))+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.5,linewidth=0.5)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.5)
-p
-CNEPcohort %>% 
-  group_by(sample) %>% 
-  summarise(mean_value=mean(value)) %>%
-  cbind(ggplot_build(p)$data[[1]]) -> mean
+combined_plot <- p_period_random + p_cohort_random + 
+  plot_layout(ncol = 2) +  # 两列并排
+  plot_annotation(
+    title = "",
+    theme = theme(
+      plot.title = element_text(size = 18, face = "bold", hjust = 0.5)
+    )
+  )
 
-p_apccohort <- ggplot(CNEPcohort,aes(sample,value))+
-  geom_hline(yintercept = 0, linetype = 2, color = "grey60",linewidth=0.8)+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.3,size=0.6)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.6)+
-  geom_segment(mean,
-               mapping=aes(x=xmin-0.25,xend=xmax+0.25,y=mean_value,yend=mean_value),
-               color="white",size=0.5)+
-  coord_flip()+
-  scale_fill_manual(values = c("#3769AE"))+
-  scale_color_manual(values = c("#3769AE"))+
-  scale_y_continuous(limits = c(-0.4, 0.4))+
-  scale_x_discrete(labels = function(x) gsub("Age-quadratic", "Age²", x)) +  
-  theme_bw()+
-  theme(legend.position = "none",
-        panel.grid = element_blank(),
-        axis.text = element_text(color = "black",size=11),
-        strip.background = element_rect(fill = "grey", color = "transparent"),
-        strip.text = element_text(color="black",size=13))+
-  labs(y="Random Intercept",x=NULL)+
-  annotate("rect", xmin = 0, xmax = 9.6, ymin = -Inf, ymax = Inf, alpha = 0.2,fill="white") +
-  facet_grid(~ facet)
-p_apccohort
+# 保存图像
+print(combined_plot)
+ggsave("Figure2.png", combined_plot, width = 10, height = 5, dpi = 600)
 
-#### 3.1.6.3 Period Part ====
-CNEPperiod$sample <- gsub("^Period ", "", CNEPperiod$sample)
-CNEPperiod <- CNEPperiod %>%
-  mutate(sample = factor(sample, levels = c("2021", "2010",'2003')))
 
-p <- ggplot(CNEPperiod,aes(sample,value))+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.5,linewidth=0.5)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.5)
-p
-CNEPperiod %>% 
-  group_by(sample) %>% 
-  summarise(mean_value=mean(value)) %>%
-  cbind(ggplot_build(p)$data[[1]]) -> mean
+### 2.1.6 Supplementary Fig.1 ====
+df_period_random <- read.csv('result_period_random.csv')
+df_period_random <- df_period_random %>%
+  mutate(model = row_number())
+df_long <- df_period_random %>%
+  pivot_longer(
+    cols = -model,
+    names_to = c("period","type"),
+    names_pattern = "Period(.*)_(.*)",
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = type,
+    values_from = value
+  )
+df_long$period <- factor(
+  df_long$period,
+  levels = c(
+    "2003","2010","2021"
+  )
+)
+S1 <- ggplot(df_long,
+            aes(x = period,
+                y = intercept,
+                group = model)) +
+  geom_point(size = 1.2) +
+  geom_errorbar(
+    aes(ymin = lower, ymax = upper),
+    width = 0.15
+  ) +
+  geom_line() +
+  facet_wrap(~model, ncol = 10) +
+  theme_bw() +
+  labs(
+    x = "Period",
+    y = "Random Intercept",
+    title = "Random Period Effects Across 125 Models",
+  ) +
+  theme(
+    axis.text.x = element_text(size = 6),
+    strip.text = element_text(size = 6),
+    plot.caption = element_text(size = 10, hjust = 0)
+  )
+ggsave(
+  "Supplementary Fig.1.png",
+  S1,
+  width = 20,
+  height = 15,
+  dpi = 300
+)
 
-p_apcperiod <- ggplot(CNEPperiod,aes(sample,value))+
-  geom_hline(yintercept = 0, linetype = 2, color = "grey60",linewidth=0.8)+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.3,size=0.6)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.6)+
-  geom_segment(mean,
-               mapping=aes(x=xmin-0.25,xend=xmax+0.25,y=mean_value,yend=mean_value),
-               color="white",size=0.5)+
-  coord_flip()+
-  scale_fill_manual(values = c("#3769AE"))+
-  scale_color_manual(values = c("#3769AE"))+
-  scale_y_continuous(limits = c(-2, 2))+
-  scale_x_discrete(labels = function(x) gsub("Age-quadratic", "Age²", x)) +  
-  theme_bw()+
-  theme(legend.position = "none",
-        panel.grid = element_blank(),
-        axis.text = element_text(color = "black",size=11),
-        strip.background = element_rect(fill = "grey", color = "transparent"),
-        strip.text = element_text(color="black",size=13))+
-  labs(y="Random Intercept",x=NULL)+
-  annotate("rect", xmin = 0, xmax = 3.6, ymin = -Inf, ymax = Inf, alpha = 0.2,fill="white") +
-  facet_grid(~ facet)
-p_apcperiod
+### 2.1.5 Supplementary Fig.2 ====
+df_cohort_random <- read.csv('result_cohort_random.csv')
+df_cohort_random <- df_cohort_random %>%
+  mutate(model = row_number())
+df_long <- df_cohort_random %>%
+  pivot_longer(
+    cols = -model,
+    names_to = c("cohort","type"),
+    names_pattern = "Cohort(.*)_(.*)",
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = type,
+    values_from = value
+  )
+df_long$cohort <- factor(
+  df_long$cohort,
+  levels = c(
+    "1920.1929","1930.1939","1940.1949","1950.1959",
+    "1960.1969","1970.1979","1980.1989","1990.1999","2000.2009"
+  )
+)
+cohort_levels <- c(
+  "1920.1929","1930.1939","1940.1949","1950.1959",
+  "1960.1969","1970.1979","1980.1989","1990.1999","2000.2009"
+)
 
-#### 3.1.6.4 Supplementary Fig 1 ====
-SupplementaryFig1 <- p_apcage / p_apcperiod / p_apccohort + 
-  plot_layout(heights = c(11, 3, 9))
-SupplementaryFig1
+df_long <- df_long %>%
+  mutate(
+    cohort = factor(cohort, levels = cohort_levels),
+    cohort_id = as.numeric(cohort)
+  )
+cohort_legend <- paste0(
+  1:9, ": ",
+  gsub("\\.", "-", cohort_levels),
+  collapse = "   "
+)
+S2 <- ggplot(df_long,
+            aes(x = cohort_id,
+                y = intercept,
+                group = model)) +
+  
+  geom_point(size = 1.2) +
+  geom_errorbar(
+    aes(ymin = lower, ymax = upper),
+    width = 0.15
+  ) +
+  geom_line() +
+  facet_wrap(~model, ncol = 10) +
+  scale_x_continuous(
+    breaks = 1:9,
+    labels = 1:9
+  ) +
+  theme_bw() +
+  labs(
+    x = "Cohort ID",
+    y = "Random Intercept",
+    title = "Random Cohort Effects Across 125 Models",
+    caption = cohort_legend
+  ) +
+  theme(
+    axis.text.x = element_text(size = 6),
+    strip.text = element_text(size = 6),
+    plot.caption = element_text(size = 10, hjust = 0)
+  )
+ggsave(
+  "Supplementary Fig.2.png",
+  S2,
+  width = 20,
+  height = 15,
+  dpi = 300
+)
 
-## 3.2 Sensitivity analysis ====
-### 3.2.1 The period variable was treated as a fixed effect ====
-#### 3.2.1.1 Read the Data ====
-# setwd('D:\\') Your own path
-# read all 125 complete datasets
+### 2.1.6 Supplementary Fig.3 ====
 file_list <- list.files(pattern = "^.*\\.csv$")
 data_list <- lapply(file_list, read.csv) 
 
@@ -1464,28 +1131,28 @@ data_list_modified <- lapply(data_list_modified, function(data) {
   data$AgeR = data$age/10 - 2
   data$AgeR2 = data$AgeR^2
   data <- data %>% mutate(cohort_cat = case_when(
-    birth >= 1921 & birth <= 1930 ~ 1,
-    birth >= 1931 & birth <= 1940 ~ 2,
-    birth >= 1941 & birth <= 1950 ~ 3,
-    birth >= 1951 & birth <= 1960 ~ 4,
-    birth >= 1961 & birth <= 1970 ~ 5,
-    birth >= 1971 & birth <= 1980 ~ 6,
-    birth >= 1981 & birth <= 1990 ~ 7,
-    birth >= 1991 & birth <= 2000 ~ 8,
-    birth >= 2001 & birth <= 2010 ~ 9,
-    TRUE ~ NA_integer_  
+    birth >= 1920 & birth <= 1929 ~ 1,
+    birth >= 1930 & birth <= 1939 ~ 2,
+    birth >= 1940 & birth <= 1949 ~ 3,
+    birth >= 1950 & birth <= 1959 ~ 4,
+    birth >= 1960 & birth <= 1969 ~ 5,
+    birth >= 1970 & birth <= 1979 ~ 6,
+    birth >= 1980 & birth <= 1989 ~ 7,
+    birth >= 1990 & birth <= 1999 ~ 8,
+    birth >= 2000 & birth <= 2009 ~ 9,
+    TRUE ~ NA_integer_  # Define the samples that do not belong to these generations as NA.
   ))
   data <- data[!is.na(data$cohort_cat), ] 
   data$cohort_cat <- as.factor(data$cohort_cat)
-  data <- data %>% mutate_at(vars(sex,Year,gov_satisfaction,happiness), as.factor)
+  data <- data %>% mutate_at(vars(sex,Year,happiness), as.factor)
+  data$birth_cent <- data$birth - mean(data$birth)
   return(data)
 })
 
-#### 3.2.1.2 Perform Coarsened Exact Matching ====
 matstrict <- cem("Year", datalist=data_list_modified, drop=c('NEP1','NEP2','NEP3','NEP4','NEP5','NEP6','NEP7','NEP8','NEP9',
                                                              'NEP10','NEP11','NEP12','NEP13','NEP14','NEP15',
-                                                             'age','birth','Year','NEP','CNEP',
-                                                             'AgeR','AgeR2','cohort_cat'))
+                                                             'age','birth','Year','CNEP',
+                                                             'AgeR','AgeR2','cohort_cat','birth_cent'))
 matstrict
 matched_data_list <- list()
 for (i in seq_along(data_list)) {
@@ -1493,257 +1160,50 @@ for (i in seq_along(data_list)) {
   matched_data_list[[i]] <- data_list_modified[[i]][matstrict[[match_col]]$matched, ]
 }
 
-#### 3.2.1.3 Construct the HAPC model for each matched dataset ====
-result_CNEP_sensitive_fix <- data.frame()
-for (data in matched_data_list) {型
-  result_tem <- data.frame() 
-  
-  fullmodel <- lmer(CNEP ~ Year + AgeR + AgeR2 + sex + happiness + gov_satisfaction + education + household_income +
-                      + (1 | cohort_cat) ,data = data) # The period variable was treated as a fixed effect
-  nullmodel <- glm(CNEP ~ happiness + gov_satisfaction + education + household_income ,
-                   data = data)
-  summary_fullmodel <- summary(fullmodel)
-  
-  # anova_p
-  anova <- anova(fullmodel,nullmodel)
-  result_tem[1,'anova_p'] <- anova$`Pr(>Chisq)`[2]
-  
-  # variance_cohort
-  random_effects_var <- as.data.frame(VarCorr(fullmodel))
-  result_tem[1,'variance_cohort'] <- random_effects_var[1,4]
-  
-  # cohort_p
-  fixed_effect <- as.data.frame(summary_fullmodel$coefficients)
-  
-  significant <- ranova(fullmodel)
-  result_tem[1,'cohort_p'] <- significant$`Pr(>Chisq)`[2]
-  
-  # period_p
-  result_tem[1,'period_p2010'] <- fixed_effect[2,5]
-  result_tem[1,'period_p2021'] <- fixed_effect[3,5]
-  
-  # Residual
-  result_tem[1,'Residual'] <- random_effects_var[2,4] 
-  
-  # Cohort_effect1-9
-  Cohort_effect <- ranef(fullmodel)$cohort_cat
-  result_tem[1,'Cohort_effect1921-1930'] <- Cohort_effect[1,1]
-  result_tem[1,'Cohort_effect1931-1940'] <- Cohort_effect[2,1]
-  result_tem[1,'Cohort_effect1941-1950'] <- Cohort_effect[3,1]
-  result_tem[1,'Cohort_effect1951-1960'] <- Cohort_effect[4,1]
-  result_tem[1,'Cohort_effect1961-1970'] <- Cohort_effect[5,1]
-  result_tem[1,'Cohort_effect1971-1980'] <- Cohort_effect[6,1]
-  result_tem[1,'Cohort_effect1981-1990'] <- Cohort_effect[7,1]
-  result_tem[1,'Cohort_effect1991-2000'] <- Cohort_effect[8,1]
-  result_tem[1,'Cohort_effect2001-2010'] <- Cohort_effect[9,1]
-  
-  # Period_effect2003 
-  Period_effect <- ranef(fullmodel)$Year
-  result_tem[1,'Period_effect2010'] <- fixed_effect[2,1]
-  result_tem[1,'Period_effect2021'] <- fixed_effect[3,1]
-  
-  # age_effect & age_p
-  result_tem[1,'age_effect'] <- fixed_effect[4,1]
-  result_tem[1,'age_p'] <- fixed_effect[4,5]
-  
-  # age2_effect & age2_p
-  result_tem[1,'age2_effect'] <- fixed_effect[5,1]
-  result_tem[1,'age2_p'] <- fixed_effect[5,5]
-  
-  # 控制变量
-  result_tem[1,'female_effect'] <- fixed_effect[6,1]
-  result_tem[1,'female_p'] <- fixed_effect[6,5]
-  result_tem[1,'happiness.2_effect'] <- fixed_effect[7,1]
-  result_tem[1,'happiness.2_p'] <- fixed_effect[7,5]
-  result_tem[1,'happiness.3_effect'] <- fixed_effect[8,1]
-  result_tem[1,'happiness.3_p'] <- fixed_effect[8,5]
-  result_tem[1,'happiness.4_effect'] <- fixed_effect[9,1]
-  result_tem[1,'happiness.4_p'] <- fixed_effect[9,5]
-  result_tem[1,'happiness.5_effect'] <- fixed_effect[10,1]
-  result_tem[1,'happiness.5_p'] <- fixed_effect[10,5]
-  result_tem[1,'satisfaction.2_effect'] <- fixed_effect[11,1]
-  result_tem[1,'satisfaction.2_p'] <- fixed_effect[11,5]
-  result_tem[1,'satisfaction.3_effect'] <- fixed_effect[12,1]
-  result_tem[1,'satisfaction.3_p'] <- fixed_effect[12,5]
-  result_tem[1,'education_effect'] <- fixed_effect[13,1]
-  result_tem[1,'education_p'] <- fixed_effect[13,5]
-  result_tem[1,'household_income_effect'] <- fixed_effect[14,1]
-  result_tem[1,'household_income_p'] <- fixed_effect[14,5]
-  
-  #R2
-  r2 <- r.squaredGLMM(fullmodel)
-  result_tem[1,'r2m'] <- r2[,1]
-  result_tem[1,'r2c'] <- r2[,2]
-  
-  result_CNEP_sensitive_fix <- rbind(result_CNEP_sensitive_fix, result_tem)
+plot_model <- function(data, index) {
+  model <- lmer(
+    CNEP ~ AgeR + I(AgeR^2) + birth_cent + sex + happiness +
+      education + household_income +
+      (1 | Year) + (1 | cohort_cat),
+    data = data
+  )
+  pred <- ggeffect(model, terms = "AgeR [all]")
+  p <- ggplot(pred, aes(x = x, y = predicted)) +
+    geom_line(linewidth = 1, color = "blue") +
+    geom_ribbon(
+      aes(ymin = conf.low, ymax = conf.high),
+      alpha = 0.2,
+      fill = "blue"
+    ) +
+    labs(
+      x = "AgeR",
+      y = "Predicted CNEP",
+      title = paste("Dataset", index)
+    ) +
+    theme_minimal()
+  return(p)
 }
-# write.csv(result_CNEP_sensitive_fix[,40:41], file = 'result_CNEP_sensitive_fix_R2.csv', row.names = FALSE)
-# write.csv(result_CNEP_sensitive_fix[,1:39], file = 'result_CNEP_sensitive_fix.csv', row.names = FALSE)
-# These two combined form Supplementary Table 8.
-# For convenience in plotting, store them in two separate files here, and do not consider R2 when plotting.
 
-#### 3.2.1.4 Supplementary Fig 2 ====
-result_CNEP_sensitive_fix <- read.csv('result_CNEP_sensitive_fix.csv') 
-# The result_CNEP_sensitive_fix.csv in section 3.2.1.3 (the version without R2)
+plots <- map2(
+  matched_data_list,
+  seq_along(matched_data_list),
+  plot_model
+)
+p_S3 <- wrap_plots(plots) +
+  plot_layout(ncol = 10)
 
-t.test(result_CNEP_sensitive_fix$cohort_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP_sensitive_fix$period_p2010, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP_sensitive_fix$period_p2021, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP_sensitive_fix$age_p, mu = 0.05, alternative = "less") #p-value < 2.2e-16 *
-t.test(result_CNEP_sensitive_fix$age2_p, mu = 0.0, alternative = "less") #p-value < 2.2e-16 *
-t.test(result_CNEP_sensitive_fix$female_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP_sensitive_fix$happiness.2_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP_sensitive_fix$happiness.3_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP_sensitive_fix$happiness.4_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP_sensitive_fix$happiness.5_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP_sensitive_fix$satisfaction.2_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP_sensitive_fix$satisfaction.3_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP_sensitive_fix$education_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP_sensitive_fix$household_income_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "Period_effect2010"] <- "Period 2010"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "Period_effect2021"] <- "Period 2021"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "age_effect"] <- "Age"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "age2_effect"] <- "Age-quadratic"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "female_effect"] <- "Female(Ref:male)"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "happiness.2_effect"] <- "unhappy(Ref:Extremely unhappy)"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "happiness.3_effect"] <- "Neutral(Ref:Extremely unhappy)"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "happiness.4_effect"] <- "happy(Ref:Extremely unhappy)"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "happiness.5_effect"] <- "Extremely happy(Ref:Extremely unhappy)"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "satisfaction.2_effect"] <- "Neutral(Ref:dissatisfied)"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "satisfaction.3_effect"] <- "Satisfied(Ref:dissatisfied)"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "education_effect"] <- "Education"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "household_income_effect"] <- "Household income"
-
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "Cohort_effect1921.1930"] <- "Cohort 1921-1930"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "Cohort_effect1931.1940"] <- "Cohort 1931-1940"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "Cohort_effect1941.1950"] <- "Cohort 1941-1950"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "Cohort_effect1951.1960"] <- "Cohort 1951-1960"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "Cohort_effect1961.1970"] <- "Cohort 1961-1970"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "Cohort_effect1971.1980"] <- "Cohort 1971-1980"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "Cohort_effect1981.1990"] <- "Cohort 1981-1990"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "Cohort_effect1991.2000"] <- "Cohort 1991-2000"
-names(result_CNEP_sensitive_fix)[names(result_CNEP_sensitive_fix) == "Cohort_effect2001.2010"] <- "Cohort 2001-2010"
-
-CNEP_order <- c("Age", "Age-quadratic",'Female(Ref:male)','unhappy(Ref:Extremely unhappy)','Neutral(Ref:Extremely unhappy)',
-                'happy(Ref:Extremely unhappy)','Extremely happy(Ref:Extremely unhappy)','Neutral(Ref:dissatisfied)','Satisfied(Ref:dissatisfied)',
-                'Education','Household income',"Period 2010","Period 2021",
-                "Cohort 1921-1930","Cohort 1931-1940","Cohort 1941-1950","Cohort 1951-1960",
-                "Cohort 1961-1970","Cohort 1971-1980","Cohort 1981-1990","Cohort 1991-2000",
-                "Cohort 2001-2010")
-result_CNEP_sensitive_fix <- result_CNEP_sensitive_fix %>% select(all_of(CNEP_order))
-CNEP <- melt(result_CNEP_sensitive_fix)
-colnames(CNEP) <- c('sample','value')
-CNEP$sample <- as.character(CNEP$sample)
-CNEP <- CNEP[!grepl("_p$", CNEP$sample), ]
-CNEP <- CNEP[!grepl("^variance", CNEP$sample), ]
-CNEP <- CNEP[!grepl("^Resid", CNEP$sample), ]
-CNEP$group <- ifelse(CNEP$sample %in% c("Age", "Age-quadratic",'Female(Ref:male)','unhappy(Ref:Extremely unhappy)','Neutral(Ref:Extremely unhappy)',
-                                        'happy(Ref:Extremely unhappy)','Extremely happy(Ref:Extremely unhappy)','Neutral(Ref:dissatisfied)','Satisfied(Ref:dissatisfied)',
-                                        'Education','Household income',"Period 2010","Period 2021"), "fix", "random")
-CNEP <- CNEP[rev(seq_len(nrow(CNEP))), ]
-unique_strings <- unique(unlist(CNEP$sample))
-CNEP$sample <- factor(CNEP$sample,levels = unique_strings)
-CNEP$group <- as.factor(CNEP$group)
-CNEP$facet <- rep("APC effect",times=2750)
-
-CNEP <- CNEP %>%
-  mutate(facet = case_when(
-    grepl("^Cohort", sample) ~ "Cohort effect",
-    TRUE ~  "Fixed effect"  
-  ))
-
-CNEPage <- CNEP[1126:2750,]
-CNEPcohort <- CNEP[1:1125,]
-
-##### 3.2.1.4.1 Age & Period Part ====
-p <- ggplot(CNEPage,aes(sample,value))+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.5,linewidth=0.5)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.5)
-p
-CNEPage %>% 
-  group_by(sample) %>% 
-  summarise(mean_value=mean(value)) %>%
-  cbind(ggplot_build(p)$data[[1]]) -> mean
-
-p_apcage <- ggplot(CNEPage,aes(sample,value))+
-  geom_hline(yintercept = 0, linetype = 2, color = "grey60",linewidth=0.8)+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.3,size=0.6)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.6)+
-  geom_segment(mean,
-               mapping=aes(x=xmin-0.25,xend=xmax+0.25,y=mean_value,yend=mean_value),
-               color="white",size=0.5)+
-  coord_flip()+
-  scale_fill_manual(values = c("#459f81"))+
-  scale_color_manual(values = c("#459f81"))+
-  scale_y_continuous(limits = c(-2.5, 2.5))+
-  scale_x_discrete(labels = function(x) gsub("Age-quadratic", "Age²", x)) +  
-  theme_bw()+
-  theme(legend.position = "none",
-        panel.grid = element_blank(),
-        axis.text = element_text(color = "black",size=11),
-        strip.background = element_rect(fill = "grey", color = "transparent"),
-        strip.text = element_text(color="black",size=13))+
-  labs(y="Coefficient",x=NULL)+
-  annotate("rect", xmin = 0, xmax = 3, ymin = -Inf, ymax = Inf, alpha = 0.2,fill="white") +
-  annotate('text', label = '*', x =13, y =0.7, angle=-90, size =8,color="black") + 
-  annotate('text', label = '*', x =12, y =-0.2, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =11, y =-0.45, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =6, y =-1.35, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =5, y =-0.85, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =4, y =0.5, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =3, y =1.45, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =1, y =-2.2, angle=-90, size =8,color="black") + 
-  facet_grid(~ facet)
-p_apcage
-
-##### 3.2.1.4.2 Cohort Part ====
-CNEPcohort$sample <- gsub("^Cohort ", "", CNEPcohort$sample)
-CNEPcohort <- CNEPcohort %>%
-  mutate(sample = factor(sample, levels = c("2001-2010", "1991-2000",'1981-1990','1971-1980','1961-1970',
-                                            '1951-1960','1941-1950','1931-1940','1921-1930')))
-
-p <- ggplot(CNEPcohort,aes(sample,value))+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.5,linewidth=0.5)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.5)
-p
-CNEPcohort %>% 
-  group_by(sample) %>% 
-  summarise(mean_value=mean(value)) %>%
-  cbind(ggplot_build(p)$data[[1]]) -> mean
-p_apccohort <- ggplot(CNEPcohort,aes(sample,value))+
-  geom_hline(yintercept = 0, linetype = 2, color = "grey60",linewidth=0.8)+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.3,size=0.6)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.6)+
-  geom_segment(mean,
-               mapping=aes(x=xmin-0.25,xend=xmax+0.25,y=mean_value,yend=mean_value),
-               color="white",size=0.5)+
-  coord_flip()+
-  scale_fill_manual(values = c("#3769AE"))+
-  scale_color_manual(values = c("#3769AE"))+
-  scale_y_continuous(limits = c(-0.4, 0.4))+
-  scale_x_discrete(labels = function(x) gsub("Age-quadratic", "Age²", x)) +  
-  theme_bw()+
-  theme(legend.position = "none",
-        panel.grid = element_blank(),
-        axis.text = element_text(color = "black",size=11),
-        strip.background = element_rect(fill = "grey", color = "transparent"),
-        strip.text = element_text(color="black",size=13))+
-  labs(y="Random Intercept",x=NULL)+
-  annotate("rect", xmin = 0, xmax = 9.6, ymin = -Inf, ymax = Inf, alpha = 0.2,fill="white") +
-  facet_grid(~ facet)
-p_apccohort
-
-##### 3.2.1.4.3 Supplementary Fig 2 ====
-SupplementaryFig2 <- p_apcage /  p_apccohort + 
-  plot_layout(heights = c(14, 9))
-SupplementaryFig2
+ggsave(
+  "Supplementary Fig.3.png",
+  p_S3,
+  width = 20,
+  height = 25,
+  units = "in",
+  dpi = 300
+)
 
 
-### 3.2.2 two cohorts with small sample sizes (i.e., 1921-1930 and 2001-2010) were excluded ====
-#### 3.2.2.1 Read the Data ====
-# setwd('D:\\') Your own path
-# read all 125 complete datasets
+# 3. Sensitivity Analysis ====
+## 3.1 Supplementary data files 2  ====
 file_list <- list.files(pattern = "^.*\\.csv$")
 data_list <- lapply(file_list, read.csv) 
 
@@ -1764,7 +1224,8 @@ data_list_modified <- lapply(data_list, function(data) {
   return(data)
 })
 
-# Calculate the age used in the analysis (AgeR:divide by ten and subtract 2), as well as its square, and calculate CNEP.
+# Calculate the age used in the analysis (AgeR:divide by ten and subtract 2), as well as its square, 
+# classify the generations(cohort) and calculate CNEP.
 data_list_modified <- lapply(data_list_modified, function(data) {
   data <- data %>%
     mutate(CNEP = NEP1 + NEP3 + NEP5 + NEP7 + NEP8 + NEP9 + NEP10 + NEP11 + NEP13 + NEP15)
@@ -1772,32 +1233,27 @@ data_list_modified <- lapply(data_list_modified, function(data) {
   data$AgeR = data$age/10 - 2
   data$AgeR2 = data$AgeR^2
   data <- data %>% mutate(cohort_cat = case_when(
-    birth >= 1921 & birth <= 1930 ~ 1,
-    birth >= 1931 & birth <= 1940 ~ 2,
-    birth >= 1941 & birth <= 1950 ~ 3,
-    birth >= 1951 & birth <= 1960 ~ 4,
-    birth >= 1961 & birth <= 1970 ~ 5,
-    birth >= 1971 & birth <= 1980 ~ 6,
-    birth >= 1981 & birth <= 1990 ~ 7,
-    birth >= 1991 & birth <= 2000 ~ 8,
-    birth >= 2001 & birth <= 2010 ~ 9,
-    TRUE ~ NA_integer_  
+    birth >= 1930 & birth <= 1939 ~ 1,
+    birth >= 1940 & birth <= 1949 ~ 2,
+    birth >= 1950 & birth <= 1959 ~ 3,
+    birth >= 1960 & birth <= 1969 ~ 4,
+    birth >= 1970 & birth <= 1979 ~ 5,
+    birth >= 1980 & birth <= 1989 ~ 6,
+    birth >= 1990 & birth <= 1999 ~ 7,
+    TRUE ~ NA_integer_  # Define the samples that do not belong to these generations as NA.
   ))
   data <- data[!is.na(data$cohort_cat), ] 
   data$cohort_cat <- as.factor(data$cohort_cat)
-  # two cohorts with small sample sizes (i.e., 1921-1930 and 2001-2010) were excluded
-  data <- data %>%
-    filter(cohort_cat %in% 2:8) %>%
-    mutate(cohort_cat = factor(cohort_cat))
-  data <- data %>% mutate_at(vars(sex,Year,gov_satisfaction,happiness), as.factor)
+  data <- data %>% mutate_at(vars(sex,Year,happiness), as.factor)
+  data$birth_cent <- data$birth - mean(data$birth)
   return(data)
 })
 
-#### 3.2.2.2 Perform Coarsened Exact Matching ====
+###  Perform Coarsened Exact Matching 
 matstrict <- cem("Year", datalist=data_list_modified, drop=c('NEP1','NEP2','NEP3','NEP4','NEP5','NEP6','NEP7','NEP8','NEP9',
                                                              'NEP10','NEP11','NEP12','NEP13','NEP14','NEP15',
-                                                             'age','birth','Year','NEP','CNEP',
-                                                             'AgeR','AgeR2','cohort_cat'))
+                                                             'age','birth','Year','CNEP',
+                                                             'AgeR','AgeR2','cohort_cat','birth_cent'))
 matstrict
 matched_data_list <- list()
 for (i in seq_along(data_list)) {
@@ -1805,284 +1261,310 @@ for (i in seq_along(data_list)) {
   matched_data_list[[i]] <- data_list_modified[[i]][matstrict[[match_col]]$matched, ]
 }
 
-#### 3.2.2.3 Construct the HAPC model for each matched dataset ====
-result_CNEP_sensitive <- data.frame()
-for (data in matched_data_list) {
+###  Construct the HAPC model for each matched dataset 
+result_CNEP_S2 <- data.frame()
+for (i in 1:length(matched_data_list)) {
+  data <- matched_data_list[[i]]
   result_tem <- data.frame() 
   
-  fullmodel <- lmer(CNEP ~ AgeR + AgeR2 + sex + happiness + gov_satisfaction + education + household_income +
-                      + (1 | cohort_cat) + (1 | Year),data = data)
-  nullmodel <- glm(CNEP ~ sex + happiness + gov_satisfaction + education + household_income ,
-                   data = data)
+  fullmodel <- lmer(CNEP ~ AgeR + AgeR2 + birth_cent + sex + happiness + education + household_income
+                    + (1 | Year) + (1 | cohort_cat), data = data)
   summary_fullmodel <- summary(fullmodel)
   
-  # anova_p
-  anova <- anova(fullmodel,nullmodel)
-  result_tem[1,'anova_p'] <- anova$`Pr(>Chisq)`[2]
+  # Model information
+  result_tem[1,'Model'] <- paste0("data", i)
+  result_tem[1,'samplesize'] <- nrow(data)
   
-  # variance_cohort
+  # variance_cohort & variance_period & variance_Residual
   random_effects_var <- as.data.frame(VarCorr(fullmodel))
   result_tem[1,'variance_cohort'] <- random_effects_var[1,4]
-  
-  # cohort_p
-  significant <- ranova(fullmodel)
-  result_tem[1,'cohort_p'] <- significant$`Pr(>Chisq)`[2]
-  
-  # variance_period
   result_tem[1,'variance_period'] <- random_effects_var[2,4]
+  result_tem[1,'variance_Residual'] <- random_effects_var[3,4]
   
-  # period_p
-  result_tem[1,'period_p'] <- significant$`Pr(>Chisq)`[3]
+  # ICC
+  result_tem[1,'ICC_cohort'] <- random_effects_var[1,4] / (random_effects_var[1,4] + random_effects_var[2,4] + random_effects_var[3,4])
+  result_tem[1,'ICC_period'] <- random_effects_var[2,4] / (random_effects_var[1,4] + random_effects_var[2,4] + random_effects_var[3,4])
   
-  # Residual
-  result_tem[1,'Residual'] <- random_effects_var[3,4]
+  # cohort_p & period_p
+  significant <- ranova(fullmodel)
+  result_tem[1,'cohort_p'] <- significant['(1 | cohort_cat)','Pr(>Chisq)']
+  result_tem[1,'period_p'] <- significant['(1 | Year)','Pr(>Chisq)']
   
-  # Cohort_effect1-9
-  Cohort_effect <- ranef(fullmodel)$cohort_cat
-  result_tem[1,'Cohort_effect1931-1940'] <- Cohort_effect[1,1]
-  result_tem[1,'Cohort_effect1941-1950'] <- Cohort_effect[2,1]
-  result_tem[1,'Cohort_effect1951-1960'] <- Cohort_effect[3,1]
-  result_tem[1,'Cohort_effect1961-1970'] <- Cohort_effect[4,1]
-  result_tem[1,'Cohort_effect1971-1980'] <- Cohort_effect[5,1]
-  result_tem[1,'Cohort_effect1981-1990'] <- Cohort_effect[6,1]
-  result_tem[1,'Cohort_effect1991-2000'] <- Cohort_effect[7,1]
+  # Cohort_effect1-7
+  re <- ranef(fullmodel, condVar = TRUE)  
   
-  # Period_effect2003-2021 
-  Period_effect <- ranef(fullmodel)$Year
-  result_tem[1,'Period_effect2003'] <- Period_effect[1,1]
-  result_tem[1,'Period_effect2010'] <- Period_effect[2,1]
-  result_tem[1,'Period_effect2021'] <- Period_effect[3,1]
+  cohort_re <- re$cohort_cat              
+  cohort_postvar <- attr(re$cohort_cat, "postVar") 
+  cohort_se <- sqrt(cohort_postvar[1,1,])
+  cohort_summary <- data.frame(
+    cohort = rownames(cohort_re),
+    intercept = cohort_re[,1],
+    lower = cohort_re[,1] - 1.96*cohort_se,
+    upper = cohort_re[,1] + 1.96*cohort_se
+  )
+  
+  result_tem[1,'Cohort1930-1939_intercept'] <- cohort_summary[1,'intercept']
+  result_tem[1,'Cohort1930-1939_lower'] <- cohort_summary[1,'lower']
+  result_tem[1,'Cohort1930-1939_upper'] <- cohort_summary[1,'upper']
+  
+  result_tem[1,'Cohort1940-1949_intercept'] <- cohort_summary[2,'intercept']
+  result_tem[1,'Cohort1940-1949_lower'] <- cohort_summary[2,'lower']
+  result_tem[1,'Cohort1940-1949_upper'] <- cohort_summary[2,'upper']
+  
+  result_tem[1,'Cohort1950-1959_intercept'] <- cohort_summary[3,'intercept']
+  result_tem[1,'Cohort1950-1959_lower'] <- cohort_summary[3,'lower']
+  result_tem[1,'Cohort1950-1959_upper'] <- cohort_summary[3,'upper']
+  
+  result_tem[1,'Cohort1960-1969_intercept'] <- cohort_summary[4,'intercept']
+  result_tem[1,'Cohort1960-1969_lower'] <- cohort_summary[4,'lower']
+  result_tem[1,'Cohort1960-1969_upper'] <- cohort_summary[4,'upper']
+  
+  result_tem[1,'Cohort1970-1979_intercept'] <- cohort_summary[5,'intercept']
+  result_tem[1,'Cohort1970-1979_lower'] <- cohort_summary[5,'lower']
+  result_tem[1,'Cohort1970-1979_upper'] <- cohort_summary[5,'upper']
+  
+  result_tem[1,'Cohort1980-1989_intercept'] <- cohort_summary[6,'intercept']
+  result_tem[1,'Cohort1980-1989_lower'] <- cohort_summary[6,'lower']
+  result_tem[1,'Cohort1980-1989_upper'] <- cohort_summary[6,'upper']
+  
+  result_tem[1,'Cohort1990-1999_intercept'] <- cohort_summary[7,'intercept']
+  result_tem[1,'Cohort1990-1999_lower'] <- cohort_summary[7,'lower']
+  result_tem[1,'Cohort1990-1999_upper'] <- cohort_summary[7,'upper']
+  
+  # Period_effect_dis 2003\2010\2021
+  period_re <- re$Year             
+  period_postvar <- attr(re$Year, "postVar") 
+  period_se <- sqrt(period_postvar[1,1,])
+  period_summary <- data.frame(
+    period = rownames(period_re),
+    intercept = period_re[,1],
+    lower = period_re[,1] - 1.96*period_se,
+    upper = period_re[,1] + 1.96*period_se
+  )
+  result_tem[1,'Period2003_intercept'] <- period_summary[1,'intercept']
+  result_tem[1,'Period2003_lower'] <- period_summary[1,'lower']
+  result_tem[1,'Period2003_upper'] <- period_summary[1,'upper']
+  
+  result_tem[1,'Period2010_intercept'] <- period_summary[2,'intercept']
+  result_tem[1,'Period2010_lower'] <- period_summary[2,'lower']
+  result_tem[1,'Period2010_upper'] <- period_summary[2,'upper']
+  
+  result_tem[1,'Period2021_intercept'] <- period_summary[3,'intercept']
+  result_tem[1,'Period2021_lower'] <- period_summary[3,'lower']
+  result_tem[1,'Period2021_upper'] <- period_summary[3,'upper']
+  
+  
   
   # age_effect & age_p
   fixed_effect <- as.data.frame(summary_fullmodel$coefficients)
-  result_tem[1,'age_effect'] <- fixed_effect[2,1]
-  result_tem[1,'age_p'] <- fixed_effect[2,5]
+  result_tem[1,'age_effect'] <- fixed_effect["AgeR", "Estimate"]
+  result_tem[1,'age_p'] <- fixed_effect["AgeR", "Pr(>|t|)"]
   
   # age2_effect & age2_p
-  result_tem[1,'age2_effect'] <- fixed_effect[3,1]
-  result_tem[1,'age2_p'] <- fixed_effect[3,5]
+  result_tem[1,'age2_effect'] <- fixed_effect["AgeR2", "Estimate"]
+  result_tem[1,'age2_p'] <- fixed_effect["AgeR2", "Pr(>|t|)"]
   
-  # 控制变量
-  result_tem[1,'female_effect'] <- fixed_effect[4,1]
-  result_tem[1,'female_p'] <- fixed_effect[4,5]
-  result_tem[1,'happiness.2_effect'] <- fixed_effect[5,1]
-  result_tem[1,'happiness.2_p'] <- fixed_effect[5,5]
-  result_tem[1,'happiness.3_effect'] <- fixed_effect[6,1]
-  result_tem[1,'happiness.3_p'] <- fixed_effect[6,5]
-  result_tem[1,'happiness.4_effect'] <- fixed_effect[7,1]
-  result_tem[1,'happiness.4_p'] <- fixed_effect[7,5]
-  result_tem[1,'happiness.5_effect'] <- fixed_effect[8,1]
-  result_tem[1,'happiness.5_p'] <- fixed_effect[8,5]
-  result_tem[1,'satisfaction.2_effect'] <- fixed_effect[9,1]
-  result_tem[1,'satisfaction.2_p'] <- fixed_effect[9,5]
-  result_tem[1,'satisfaction.3_effect'] <- fixed_effect[10,1]
-  result_tem[1,'satisfaction.3_p'] <- fixed_effect[10,5]
-  result_tem[1,'education_effect'] <- fixed_effect[11,1]
-  result_tem[1,'education_p'] <- fixed_effect[11,5]
-  result_tem[1,'household_income_effect'] <- fixed_effect[12,1]
-  result_tem[1,'household_income_p'] <- fixed_effect[12,5]
+  # Cohort_effect_con & p
+  result_tem[1,'Cohort_con_effect'] <- fixed_effect["birth_cent", "Estimate"]
+  result_tem[1,'Cohort_con_p'] <- fixed_effect["birth_cent", "Pr(>|t|)"]
   
-  #R2
-  r2 <- r.squaredGLMM(fullmodel)
-  result_tem[1,'r2m'] <- r2[,1]
-  result_tem[1,'r2c'] <- r2[,2]
+  # Control Variables
+  result_tem[1,'female_effect'] <- fixed_effect["sex2", "Estimate"]
+  result_tem[1,'female_p'] <- fixed_effect["sex2", "Pr(>|t|)"]
+  result_tem[1,'education_effect'] <- fixed_effect['education',"Estimate"]
+  result_tem[1,'education_p'] <- fixed_effect['education',"Pr(>|t|)"]
+  result_tem[1,'household_income_effect'] <- fixed_effect['household_income',"Estimate"]
+  result_tem[1,'household_income_p'] <- fixed_effect['household_income',"Pr(>|t|)"]
+  result_tem[1,'happiness.2_effect'] <- fixed_effect["happiness2", "Estimate"]
+  result_tem[1,'happiness.2_p'] <- fixed_effect["happiness2","Pr(>|t|)"]
+  result_tem[1,'happiness.3_effect'] <- fixed_effect["happiness3","Estimate"]
+  result_tem[1,'happiness.3_p'] <- fixed_effect["happiness3","Pr(>|t|)"]
+  result_tem[1,'happiness.4_effect'] <- fixed_effect["happiness4","Estimate"]
+  result_tem[1,'happiness.4_p'] <- fixed_effect["happiness4","Pr(>|t|)"]
+  result_tem[1,'happiness.5_effect'] <- fixed_effect["happiness5","Estimate"]
+  result_tem[1,'happiness.5_p'] <- fixed_effect["happiness5","Pr(>|t|)"]
   
-  result_CNEP_sensitive <- rbind(result_CNEP_sensitive, result_tem)
+  result_CNEP_S2 <- rbind(result_CNEP_S2, result_tem)
 }
-# write.csv(result_CNEP_sensitive[,39:40], file = 'result_CNEP_sensitive_remove_R2.csv', row.names = FALSE)
-# write.csv(result_CNEP_sensitive[,1:38], file = 'result_CNEP_sensitive_remove.csv', row.names = FALSE)
-# These two combined form Supplementary Table 9.
-# For convenience in plotting, store them in two separate files here, and do not consider R2 when plotting.
 
-#### 3.2.2.4 Supplementary Fig 3 ====
-result_CNEP_sensitive <- read.csv('result_CNEP_sensitive_remove.csv')
-# The result_CNEP_sensitive_remove.csv in section 3.2.2.3 (the version without R2)
+## Supplementary data files 2
+write.csv(result_CNEP_S2[,1:59], file = 'Supplementary data files 2.csv', row.names = FALSE)
 
-t.test(result_CNEP_sensitive$cohort_p, mu = 0.05, alternative = "less") #p-value = 0.01633 *
-t.test(result_CNEP_sensitive$period_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP_sensitive$age_p, mu = 0.05, alternative = "less") #p-value < 2.2e-16 *
-t.test(result_CNEP_sensitive$age2_p, mu = 0.05, alternative = "less") #p-value < 2.2e-16 *
-t.test(result_CNEP_sensitive$female_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP_sensitive$happiness.2_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP_sensitive$happiness.3_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP_sensitive$happiness.4_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP_sensitive$happiness.5_p, mu = 0.05, alternative = "less") #p-value = 1
-t.test(result_CNEP_sensitive$satisfaction.2_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP_sensitive$satisfaction.3_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP_sensitive$education_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
-t.test(result_CNEP_sensitive$household_income_p, mu = 0.001, alternative = "less") #p-value < 2.2e-16 ***
 
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "age_effect"] <- "Age"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "age2_effect"] <- "Age-quadratic"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "female_effect"] <- "Female(Ref:male)"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "happiness.2_effect"] <- "unhappy(Ref:Extremely unhappy)"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "happiness.3_effect"] <- "Neutral(Ref:Extremely unhappy)"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "happiness.4_effect"] <- "happy(Ref:Extremely unhappy)"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "happiness.5_effect"] <- "Extremely happy(Ref:Extremely unhappy)"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "satisfaction.2_effect"] <- "Neutral(Ref:dissatisfied)"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "satisfaction.3_effect"] <- "Satisfied(Ref:dissatisfied)"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "education_effect"] <- "Education"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "household_income_effect"] <- "Household income"
+## 3.2 Supplementary data files 3  ====
+file_list <- list.files(pattern = "^.*\\.csv$")
+data_list <- lapply(file_list, read.csv) 
 
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "Cohort_effect1931.1940"] <- "Cohort 1931-1940"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "Cohort_effect1941.1950"] <- "Cohort 1941-1950"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "Cohort_effect1951.1960"] <- "Cohort 1951-1960"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "Cohort_effect1961.1970"] <- "Cohort 1961-1970"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "Cohort_effect1971.1980"] <- "Cohort 1971-1980"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "Cohort_effect1981.1990"] <- "Cohort 1981-1990"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "Cohort_effect1991.2000"] <- "Cohort 1991-2000"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "Period_effect2003"] <- "Period 2003"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "Period_effect2010"] <- "Period 2010"
-names(result_CNEP_sensitive)[names(result_CNEP_sensitive) == "Period_effect2021"] <- "Period 2021"
+# Reverse the scores for reverse-coded questions.
+col_names_list_reset <- c( "NEP2", 'NEP4','NEP6','NEP8','NEP10','NEP12','NEP14')
+replace_values_NEP <- function(data, col_name) {
+  data[[col_name]] <- ifelse(data[[col_name]] == 1, 5,
+                             ifelse(data[[col_name]] == 2, 4,
+                                    ifelse(data[[col_name]] == 4, 2,
+                                           ifelse(data[[col_name]] == 5, 1, data[[col_name]]))))
+  return(data)
+}
 
-CNEP_order <- c("Age", "Age-quadratic",'Female(Ref:male)','unhappy(Ref:Extremely unhappy)','Neutral(Ref:Extremely unhappy)',
-                'happy(Ref:Extremely unhappy)','Extremely happy(Ref:Extremely unhappy)','Neutral(Ref:dissatisfied)','Satisfied(Ref:dissatisfied)',
-                'Education','Household income','Period 2003',"Period 2010","Period 2021",
-                "Cohort 1931-1940","Cohort 1941-1950","Cohort 1951-1960",
-                "Cohort 1961-1970","Cohort 1971-1980","Cohort 1981-1990","Cohort 1991-2000")
-result_CNEP_sensitive <- result_CNEP_sensitive %>% select(all_of(CNEP_order))
-CNEP <- melt(result_CNEP_sensitive)
-colnames(CNEP) <- c('sample','value')
-CNEP$sample <- as.character(CNEP$sample)
-CNEP <- CNEP[!grepl("_p$", CNEP$sample), ]
-CNEP <- CNEP[!grepl("^variance", CNEP$sample), ]
-CNEP <- CNEP[!grepl("^Resid", CNEP$sample), ]
-CNEP$group <- ifelse(CNEP$sample %in% c("Age", "Age-quadratic",'Female(Ref:male)','unhappy(Ref:Extremely unhappy)','Neutral(Ref:Extremely unhappy)',
-                                        'happy(Ref:Extremely unhappy)','Extremely happy(Ref:Extremely unhappy)','Neutral(Ref:dissatisfied)','Satisfied(Ref:dissatisfied)',
-                                        'Education','Household income',"Period 2003","Period 2010","Period 2021"), "fix", "random")
-CNEP <- CNEP[rev(seq_len(nrow(CNEP))), ]
-unique_strings <- unique(unlist(CNEP$sample))
-CNEP$sample <- factor(CNEP$sample,levels = unique_strings)
-CNEP$group <- as.factor(CNEP$group)
-CNEP$facet <- rep("APC effect",times=2625)
+data_list_modified <- lapply(data_list, function(data) {
+  for (col_name in col_names_list_reset) {
+    data <- replace_values_NEP(data, col_name)
+  }
+  return(data)
+})
 
-CNEP <- CNEP %>%
-  mutate(facet = case_when(
-    grepl("^Cohort", sample) ~ "Cohort effect *",
-    grepl("^Period", sample) ~ "Period effect ***",
-    TRUE ~  "Fixed effect"  
+# Calculate the age used in the analysis (AgeR:divide by ten and subtract 2), as well as its square, 
+# classify the generations(cohort) and calculate CNEP.
+data_list_modified <- lapply(data_list_modified, function(data) {
+  data <- data %>%
+    mutate(CNEP = NEP1 + NEP3 + NEP5 + NEP7 + NEP8 + NEP9 + NEP10 + NEP11 + NEP13 + NEP15)
+  data$birth <- data$Year - data$age
+  data$AgeR = data$age/10 - 2
+  data$AgeR2 = data$AgeR^2
+  data <- data %>% mutate(cohort_cat = case_when(
+    birth >= 1920 & birth <= 1929 ~ 1,
+    birth >= 1930 & birth <= 1939 ~ 2,
+    birth >= 1940 & birth <= 1949 ~ 3,
+    birth >= 1950 & birth <= 1959 ~ 4,
+    birth >= 1960 & birth <= 1969 ~ 5,
+    birth >= 1970 & birth <= 1979 ~ 6,
+    birth >= 1980 & birth <= 1989 ~ 7,
+    birth >= 1990 & birth <= 1999 ~ 8,
+    birth >= 2000 & birth <= 2009 ~ 9,
+    TRUE ~ NA_integer_  # Define the samples that do not belong to these generations as NA.
   ))
+  data <- data[!is.na(data$cohort_cat), ] 
+  data$cohort_cat <- as.factor(data$cohort_cat)
+  data <- data %>% mutate_at(vars(sex,Year,happiness), as.factor)
+  data$birth_cent <- data$birth - mean(data$birth)
+  return(data)
+})
 
-CNEPage <- CNEP[1251:2625,]
-CNEPcohort <- CNEP[1:875,]
-CNEPperiod <- CNEP[876:1250,]
+### Perform Coarsened Exact Matching 
+matstrict <- cem("Year", datalist=data_list_modified, drop=c('NEP1','NEP2','NEP3','NEP4','NEP5','NEP6','NEP7','NEP8','NEP9',
+                                                             'NEP10','NEP11','NEP12','NEP13','NEP14','NEP15',
+                                                             'age','birth','Year','CNEP',
+                                                             'AgeR','AgeR2','cohort_cat','birth_cent'))
+matstrict
+matched_data_list <- list()
+for (i in seq_along(data_list)) {
+  match_col <- paste0("match", i)
+  matched_data_list[[i]] <- data_list_modified[[i]][matstrict[[match_col]]$matched, ]
+}
 
-##### 3.2.2.4.1 Age Part ====
-p <- ggplot(CNEPage,aes(sample,value))+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.5,linewidth=0.5)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.5)
-p
-CNEPage %>% 
-  group_by(sample) %>% 
-  summarise(mean_value=mean(value)) %>%
-  cbind(ggplot_build(p)$data[[1]]) -> mean
-
-p_apcage <- ggplot(CNEPage,aes(sample,value))+
-  geom_hline(yintercept = 0, linetype = 2, color = "grey60",linewidth=0.8)+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.3,size=0.6)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.6)+
-  geom_segment(mean,
-               mapping=aes(x=xmin-0.25,xend=xmax+0.25,y=mean_value,yend=mean_value),
-               color="white",size=0.5)+
-  coord_flip()+
-  scale_fill_manual(values = c("#459f81"))+
-  scale_color_manual(values = c("#459f81"))+
-  scale_y_continuous(limits = c(-2, 2))+
-  scale_x_discrete(labels = function(x) gsub("Age-quadratic", "Age²", x)) +  
-  theme_bw()+
-  theme(legend.position = "none",
-        panel.grid = element_blank(),
-        axis.text = element_text(color = "black",size=11),
-        strip.background = element_rect(fill = "grey", color = "transparent"),
-        strip.text = element_text(color="black",size=13))+
-  labs(y="Coefficient",x=NULL)+
-  annotate("rect", xmin = 0, xmax = 3, ymin = -Inf, ymax = Inf, alpha = 0.2,fill="white") +
-  annotate('text', label = '*', x =11, y =0.65, angle=-90, size =8,color="black") + 
-  annotate('text', label = '*', x =10, y =-0.2, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =9, y =-0.55, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =4, y =-1.25, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =3, y =-0.9, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =2, y =0.45, angle=-90, size =8,color="black") + 
-  annotate('text', label = '***', x =1, y =1.3, angle=-90, size =8,color="black") +
-  facet_grid(~ facet)
-p_apcage
-
-##### 3.2.2.4.2 Cohort Part ====
-CNEPcohort$sample <- gsub("^Cohort ", "", CNEPcohort$sample)
-CNEPcohort <- CNEPcohort %>%
-  mutate(sample = factor(sample, levels = c( "1991-2000",'1981-1990','1971-1980','1961-1970',
-                                             '1951-1960','1941-1950','1931-1940')))
-
-p <- ggplot(CNEPcohort,aes(sample,value))+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.5,linewidth=0.5)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.5)
-p
-CNEPcohort %>% 
-  group_by(sample) %>% 
-  summarise(mean_value=mean(value)) %>%
-  cbind(ggplot_build(p)$data[[1]]) -> mean
-
-p_apccohort <- ggplot(CNEPcohort,aes(sample,value))+
-  geom_hline(yintercept = 0, linetype = 2, color = "grey60",linewidth=0.8)+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.3,size=0.6)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.6)+
-  geom_segment(mean,
-               mapping=aes(x=xmin-0.25,xend=xmax+0.25,y=mean_value,yend=mean_value),
-               color="white",size=0.5)+
-  coord_flip()+
-  scale_fill_manual(values = c("#3769AE"))+
-  scale_color_manual(values = c("#3769AE"))+
-  scale_y_continuous(limits = c(-0.4, 0.4))+
-  scale_x_discrete(labels = function(x) gsub("Age-quadratic", "Age²", x)) +  
-  theme_bw()+
-  theme(legend.position = "none",
-        panel.grid = element_blank(),
-        axis.text = element_text(color = "black",size=11),
-        strip.background = element_rect(fill = "grey", color = "transparent"),
-        strip.text = element_text(color="black",size=13))+
-  labs(y="Random Intercept",x=NULL)+
-  annotate("rect", xmin = 0, xmax = 7.6, ymin = -Inf, ymax = Inf, alpha = 0.2,fill="white") +
-  facet_grid(~ facet)
-p_apccohort
-
-##### 3.2.2.4.3 Period Part ====
-CNEPperiod$sample <- gsub("^Period ", "", CNEPperiod$sample)
-CNEPperiod <- CNEPperiod %>%
-  mutate(sample = factor(sample, levels = c("2021", "2010",'2003')))
-
-p <- ggplot(CNEPperiod,aes(sample,value))+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.5,linewidth=0.5)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.5)
-p
-CNEPperiod %>% 
-  group_by(sample) %>% 
-  summarise(mean_value=mean(value)) %>%
-  cbind(ggplot_build(p)$data[[1]]) -> mean
-p_apcperiod <- ggplot(CNEPperiod,aes(sample,value))+
-  geom_hline(yintercept = 0, linetype = 2, color = "grey60",linewidth=0.8)+
-  stat_boxplot(aes(color=group),geom = "errorbar", width=0.3,size=0.6)+
-  geom_boxplot(aes(fill=group,color=group),outlier.shape = 18,size=0.6)+
-  geom_segment(mean,
-               mapping=aes(x=xmin-0.25,xend=xmax+0.25,y=mean_value,yend=mean_value),
-               color="white",size=0.5)+
-  coord_flip()+
-  scale_fill_manual(values = c("#3769AE"))+
-  scale_color_manual(values = c("#3769AE"))+
-  #y轴范围设置
-  scale_y_continuous(limits = c(-2, 2))+
-  scale_x_discrete(labels = function(x) gsub("Age-quadratic", "Age²", x)) +  
-  theme_bw()+
-  theme(legend.position = "none",
-        panel.grid = element_blank(),
-        axis.text = element_text(color = "black",size=11),
-        strip.background = element_rect(fill = "grey", color = "transparent"),
-        strip.text = element_text(color="black",size=13))+
-  labs(y="Random Intercept",x=NULL)+
-  annotate("rect", xmin = 0, xmax = 3.6, ymin = -Inf, ymax = Inf, alpha = 0.2,fill="white") +
-  facet_grid(~ facet)
-p_apcperiod
-
-##### 3.2.2.4.4 Supplementary Fig 3 ====
-SupplementaryFig3 <- p_apcage / p_apcperiod / p_apccohort + 
-  plot_layout(heights = c(11, 3, 7))
-SupplementaryFig3
+### Construct the HAPC model for each matched dataset
+result_CNEP_S3 <- data.frame()
+for (i in 1:length(matched_data_list)) {
+  data <- matched_data_list[[i]]
+  result_tem <- data.frame() 
+  
+  fullmodel <- lmer(CNEP ~ AgeR + AgeR2 + birth_cent + 
+                    + (1 | Year) + (1 | cohort_cat), data = data)
+  summary_fullmodel <- summary(fullmodel)
+  
+  # Model information
+  result_tem[1,'Model'] <- paste0("data", i)
+  result_tem[1,'samplesize'] <- nrow(data)
+  
+  # variance_cohort & variance_period & variance_Residual
+  random_effects_var <- as.data.frame(VarCorr(fullmodel))
+  result_tem[1,'variance_cohort'] <- random_effects_var[1,4]
+  result_tem[1,'variance_period'] <- random_effects_var[2,4]
+  result_tem[1,'variance_Residual'] <- random_effects_var[3,4]
+  
+  # ICC
+  result_tem[1,'ICC_cohort'] <- random_effects_var[1,4] / (random_effects_var[1,4] + random_effects_var[2,4] + random_effects_var[3,4])
+  result_tem[1,'ICC_period'] <- random_effects_var[2,4] / (random_effects_var[1,4] + random_effects_var[2,4] + random_effects_var[3,4])
+  
+  # cohort_p & period_p
+  significant <- ranova(fullmodel)
+  result_tem[1,'cohort_p'] <- significant['(1 | cohort_cat)','Pr(>Chisq)']
+  result_tem[1,'period_p'] <- significant['(1 | Year)','Pr(>Chisq)']
+  
+  # Cohort_effect1-9
+  re <- ranef(fullmodel, condVar = TRUE)  
+  
+  cohort_re <- re$cohort_cat              
+  cohort_postvar <- attr(re$cohort_cat, "postVar") 
+  cohort_se <- sqrt(cohort_postvar[1,1,])
+  cohort_summary <- data.frame(
+    cohort = rownames(cohort_re),
+    intercept = cohort_re[,1],
+    lower = cohort_re[,1] - 1.96*cohort_se,
+    upper = cohort_re[,1] + 1.96*cohort_se
+  )
+  result_tem[1,'Cohort1920-1929_intercept'] <- cohort_summary[1,'intercept']
+  result_tem[1,'Cohort1920-1929_lower'] <- cohort_summary[1,'lower']
+  result_tem[1,'Cohort1920-1929_upper'] <- cohort_summary[1,'upper']
+  
+  result_tem[1,'Cohort1930-1939_intercept'] <- cohort_summary[2,'intercept']
+  result_tem[1,'Cohort1930-1939_lower'] <- cohort_summary[2,'lower']
+  result_tem[1,'Cohort1930-1939_upper'] <- cohort_summary[2,'upper']
+  
+  result_tem[1,'Cohort1940-1949_intercept'] <- cohort_summary[3,'intercept']
+  result_tem[1,'Cohort1940-1949_lower'] <- cohort_summary[3,'lower']
+  result_tem[1,'Cohort1940-1949_upper'] <- cohort_summary[3,'upper']
+  
+  result_tem[1,'Cohort1950-1959_intercept'] <- cohort_summary[4,'intercept']
+  result_tem[1,'Cohort1950-1959_lower'] <- cohort_summary[4,'lower']
+  result_tem[1,'Cohort1950-1959_upper'] <- cohort_summary[4,'upper']
+  
+  result_tem[1,'Cohort1960-1969_intercept'] <- cohort_summary[5,'intercept']
+  result_tem[1,'Cohort1960-1969_lower'] <- cohort_summary[5,'lower']
+  result_tem[1,'Cohort1960-1969_upper'] <- cohort_summary[5,'upper']
+  
+  result_tem[1,'Cohort1970-1979_intercept'] <- cohort_summary[6,'intercept']
+  result_tem[1,'Cohort1970-1979_lower'] <- cohort_summary[6,'lower']
+  result_tem[1,'Cohort1970-1979_upper'] <- cohort_summary[6,'upper']
+  
+  result_tem[1,'Cohort1980-1989_intercept'] <- cohort_summary[7,'intercept']
+  result_tem[1,'Cohort1980-1989_lower'] <- cohort_summary[7,'lower']
+  result_tem[1,'Cohort1980-1989_upper'] <- cohort_summary[7,'upper']
+  
+  result_tem[1,'Cohort1990-1999_intercept'] <- cohort_summary[8,'intercept']
+  result_tem[1,'Cohort1990-1999_lower'] <- cohort_summary[8,'lower']
+  result_tem[1,'Cohort1990-1999_upper'] <- cohort_summary[8,'upper']
+  
+  result_tem[1,'Cohort2000-2009_intercept'] <- cohort_summary[9,'intercept']
+  result_tem[1,'Cohort2000-2009_lower'] <- cohort_summary[9,'lower']
+  result_tem[1,'Cohort2000-2009_upper'] <- cohort_summary[9,'upper']
+  
+  # Period_effect_dis 2003\2010\2021
+  period_re <- re$Year             
+  period_postvar <- attr(re$Year, "postVar") 
+  period_se <- sqrt(period_postvar[1,1,])
+  period_summary <- data.frame(
+    period = rownames(period_re),
+    intercept = period_re[,1],
+    lower = period_re[,1] - 1.96*period_se,
+    upper = period_re[,1] + 1.96*period_se
+  )
+  result_tem[1,'Period2003_intercept'] <- period_summary[1,'intercept']
+  result_tem[1,'Period2003_lower'] <- period_summary[1,'lower']
+  result_tem[1,'Period2003_upper'] <- period_summary[1,'upper']
+  
+  result_tem[1,'Period2010_intercept'] <- period_summary[2,'intercept']
+  result_tem[1,'Period2010_lower'] <- period_summary[2,'lower']
+  result_tem[1,'Period2010_upper'] <- period_summary[2,'upper']
+  
+  result_tem[1,'Period2021_intercept'] <- period_summary[3,'intercept']
+  result_tem[1,'Period2021_lower'] <- period_summary[3,'lower']
+  result_tem[1,'Period2021_upper'] <- period_summary[3,'upper']
+  
+  # age_effect & age_p
+  fixed_effect <- as.data.frame(summary_fullmodel$coefficients)
+  result_tem[1,'age_effect'] <- fixed_effect["AgeR", "Estimate"]
+  result_tem[1,'age_p'] <- fixed_effect["AgeR", "Pr(>|t|)"]
+  
+  # age2_effect & age2_p
+  result_tem[1,'age2_effect'] <- fixed_effect["AgeR2", "Estimate"]
+  result_tem[1,'age2_p'] <- fixed_effect["AgeR2", "Pr(>|t|)"]
+  
+  # Cohort_effect_con & p
+  result_tem[1,'Cohort_con_effect'] <- fixed_effect["birth_cent", "Estimate"]
+  result_tem[1,'Cohort_con_p'] <- fixed_effect["birth_cent", "Pr(>|t|)"]
+  
+  
+  result_CNEP_S3 <- rbind(result_CNEP_S3, result_tem)
+}
+## Supplementary data files 3
+write.csv(result_CNEP_S3[,1:51], file = 'Supplementary data files 3.csv', row.names = FALSE)
